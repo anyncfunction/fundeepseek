@@ -134,34 +134,48 @@ async function main(options) {
   }
 
   // ══════ API Key Check ══════
-  const apiKey = options.apiKey || config.apiKey || process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) {
+  let apiKey = options.apiKey || config.apiKey || process.env.DEEPSEEK_API_KEY;
+
+  // Single-prompt mode still requires key
+  if (options.prompt && !apiKey) {
     console.error(chalk.red('\n✗ No API key found.'));
     console.error(chalk.gray('  Set DEEPSEEK_API_KEY environment variable or use --api-key'));
     console.error(chalk.gray('  Get your key at: https://platform.deepseek.com/api_keys\n'));
     process.exit(1);
   }
 
-  // ══════ Agent Setup ══════
-  const agent = new Agent({
-    apiKey,
-    model,
-    mode,
-    thinking,
-    projectRoot,
-    promptContext: {
-      projectRoot,
-      projectFiles: getProjectFiles(projectRoot),
-      gitStatus: getGitStatus(projectRoot),
-      mode,
+  // ══════ Agent Setup (lazy, for when key is available) ══════
+  let agent = null;
+
+  function createAgent(key) {
+    apiKey = key;
+    agent = new Agent({
+      apiKey,
       model,
-      userProfile: memory.profile,
-      memories: memory.getRelevantMemories(),
-    },
-  });
+      mode,
+      thinking,
+      projectRoot,
+      promptContext: {
+        projectRoot,
+        projectFiles: getProjectFiles(projectRoot),
+        gitStatus: getGitStatus(projectRoot),
+        mode,
+        model,
+        userProfile: memory.profile,
+        memories: memory.getRelevantMemories(),
+      },
+    });
+    wireAgentEvents(agent, memory);
+    return agent;
+  }
+
+  // Create agent upfront if key exists
+  if (apiKey) {
+    createAgent(apiKey);
+  }
 
   // ══════ Single Prompt Mode ══════
-  if (options.prompt) {
+  if (options.prompt && agent) {
     // Print compact header
     console.log(renderer.renderBanner({ model, mode, thinking, projectRoot }));
     renderer.printDivider();
@@ -196,32 +210,34 @@ async function main(options) {
   }
 
   // ══════ Interactive Mode ══════
-  // Clear screen for full immersive experience
   renderer.clearScreen();
 
   // Print header
   console.log(renderer.renderBanner({ model, mode, thinking, projectRoot }));
-  console.log(chalk.gray(`  Commands: ${chalk.white('/auto /plan /ask /chat')}  ${chalk.white('/model <name>')}  ${chalk.white('/clear /compact /usage /help')}  ${chalk.white('/exit')}`));
-  renderer.printDivider();
 
-  // Wire up visual events
-  wireAgentEvents(agent, memory);
+  if (!agent) {
+    // No API key — show setup screen
+    showSetupScreen(projectRoot, memory);
+  } else {
+    // Has key — show normal help line
+    console.log(chalk.gray(`  Commands: ${chalk.white('/auto /plan /ask /chat')}  ${chalk.white('/model <name>')}  ${chalk.white('/clear /compact /usage /help')}  ${chalk.white('/exit')}`));
+    renderer.printDivider();
 
-  // Resume session
-  if (!options.newSession) {
-    const resumed = tryResumeSession(projectRoot, agent, options.resume);
-    if (resumed) {
-      renderer.printInfo('Session resumed. Type /clear to start fresh.');
-      renderer.printBlank();
+    // Resume session
+    if (!options.newSession) {
+      const resumed = tryResumeSession(projectRoot, agent, options.resume);
+      if (resumed) {
+        renderer.printInfo('Session resumed. Type /clear to start fresh.');
+        renderer.printBlank();
+      }
     }
   }
 
   // Create readline
-  const promptStr = renderer.getPrompt(mode);
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: promptStr,
+    prompt: agent ? renderer.getPrompt(mode) : chalk.yellow.bold('🔑 funds › '),
     terminal: true,
     historySize: 1000,
   });
@@ -232,7 +248,7 @@ async function main(options) {
   rl.on('line', async (line) => {
     const input = line.trim();
     if (!input) {
-      rl.setPrompt(renderer.getPrompt(mode));
+      rl.setPrompt(agent ? renderer.getPrompt(mode) : chalk.yellow.bold('🔑 funds › '));
       rl.prompt();
       return;
     }
@@ -240,10 +256,64 @@ async function main(options) {
     // Exit
     if (input === '/exit' || input === '/quit') {
       console.log(chalk.gray('\n  Goodbye! 👋\n'));
-      saveSession(projectRoot, agent, memory);
+      if (agent) saveSession(projectRoot, agent, memory);
       rl.close();
       return;
     }
+
+    // ══════ Auth command (available without agent) ══════
+    if (input.startsWith('/auth ') || input.startsWith('/key ')) {
+      const key = input.replace(/^\/(auth|key)\s+/, '').trim();
+      if (!key || key.length < 10) {
+        renderer.printError('Invalid API key. Should start with "sk-".');
+        rl.setPrompt(chalk.yellow.bold('🔑 funds › '));
+        rl.prompt();
+        return;
+      }
+
+      // Save to global config
+      try {
+        const configDir = path.join(process.env.HOME || process.env.USERPROFILE || '~', '.fundeepseek');
+        if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
+        const cfg = fs.existsSync(path.join(configDir, 'config.json'))
+          ? JSON.parse(fs.readFileSync(path.join(configDir, 'config.json'), 'utf-8'))
+          : {};
+        cfg.apiKey = key;
+        fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify(cfg, null, 2), 'utf-8');
+      } catch (e) {
+        renderer.printWarning('API key set for this session, but failed to save permanently.');
+      }
+
+      // Create agent with the new key
+      createAgent(key);
+      renderer.printSuccess('API key configured! FundeePseek is ready.');
+      renderer.printBlank();
+      renderer.printDivider();
+
+      if (!options.newSession) {
+        const resumed = tryResumeSession(projectRoot, agent, options.resume);
+        if (resumed) {
+          renderer.printInfo('Session resumed. Type /clear to start fresh.');
+          renderer.printBlank();
+        }
+      }
+
+      rl.setPrompt(renderer.getPrompt(mode));
+      rl.prompt();
+      return;
+    }
+
+    // If no agent yet and not auth command
+    if (!agent) {
+      console.log(chalk.yellow('\n  👋 Welcome! First, set your API key:'));
+      console.log(chalk.white('     /auth sk-your-deepseek-api-key'));
+      console.log(chalk.gray('\n  Get a key at: https://platform.deepseek.com/api_keys\n'));
+      rl.setPrompt(chalk.yellow.bold('🔑 funds › '));
+      rl.prompt();
+      return;
+    }
+
+    // ══════ Normal agent flow ══════
 
     // Local slash commands
     const cmdResult = handleLocalCommand(input, agent, memory, rl);
@@ -274,7 +344,7 @@ async function main(options) {
     renderer.printBlank();
     renderer.printBlank();
 
-    rl.setPrompt(renderer.getPrompt(agent._mode || mode));
+    rl.setPrompt(renderer.getPrompt(agent.mode || mode));
     rl.prompt();
   });
 
@@ -282,6 +352,33 @@ async function main(options) {
     console.log('');
     process.exit(0);
   });
+}
+
+// ═══════════════════════════════════════════════════════════
+// Setup Screen — shown when no API key configured
+// ═══════════════════════════════════════════════════════════
+
+function showSetupScreen(projectRoot, memory) {
+  const w = Math.min(process.stdout.columns || 80, 70);
+
+  console.log([
+    '',
+    chalk.yellow.bold('  ╔' + '═'.repeat(w - 4) + '╗'),
+    chalk.yellow.bold('  ║') + chalk.white.bold('  👋 Welcome to FundeePseek!') + ' '.repeat(Math.max(0, w - 31)) + chalk.yellow.bold('║'),
+    chalk.yellow.bold('  ║') + ' '.repeat(w - 4) + chalk.yellow.bold('║'),
+    chalk.yellow.bold('  ║') + chalk.white('  To get started, set your DeepSeek API key:') + ' '.repeat(Math.max(0, w - 50)) + chalk.yellow.bold('║'),
+    chalk.yellow.bold('  ║') + ' '.repeat(w - 4) + chalk.yellow.bold('║'),
+    chalk.yellow.bold('  ║') + chalk.cyan.bold('     /auth sk-your-api-key-here') + ' '.repeat(Math.max(0, w - 34)) + chalk.yellow.bold('║'),
+    chalk.yellow.bold('  ║') + ' '.repeat(w - 4) + chalk.yellow.bold('║'),
+    chalk.yellow.bold('  ║') + chalk.gray('  Or set via:') + ' '.repeat(Math.max(0, w - 20)) + chalk.yellow.bold('║'),
+    chalk.yellow.bold('  ║') + chalk.gray('    • Environment:  setx DEEPSEEK_API_KEY sk-xxx') + ' '.repeat(Math.max(0, w - 53)) + chalk.yellow.bold('║'),
+    chalk.yellow.bold('  ║') + chalk.gray('    • Config file:  ~/.fundeepseek/config.json') + ' '.repeat(Math.max(0, w - 50)) + chalk.yellow.bold('║'),
+    chalk.yellow.bold('  ║') + chalk.gray('    • CLI flag:     funds --api-key sk-xxx') + ' '.repeat(Math.max(0, w - 46)) + chalk.yellow.bold('║'),
+    chalk.yellow.bold('  ║') + ' '.repeat(w - 4) + chalk.yellow.bold('║'),
+    chalk.yellow.bold('  ║') + chalk.gray('  Get your key: https://platform.deepseek.com/api_keys') + ' '.repeat(Math.max(0, w - 57)) + chalk.yellow.bold('║'),
+    chalk.yellow.bold('  ╚' + '═'.repeat(w - 4) + '╝'),
+    '',
+  ].join('\n'));
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -401,6 +498,7 @@ function handleLocalCommand(input, agent, memory, rl) {
       chalk.white('  /plan') + chalk.gray('      — Plan-first mode'),
       chalk.white('  /ask') + chalk.gray('       — Read-only mode'),
       chalk.white('  /chat') + chalk.gray('      — Pure conversation'),
+      chalk.white('  /auth <key>') + chalk.gray(' — Set API key'),
       chalk.white('  /model <name>') + chalk.gray(' — Switch model'),
       chalk.white('  /clear') + chalk.gray('     — Clear context'),
       chalk.white('  /compact') + chalk.gray('   — Show context usage'),
