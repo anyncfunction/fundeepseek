@@ -119,7 +119,7 @@ function leftPane(row: number, w: number, opts: { model: string; mode: string; p
     case 9: return padRight('  ' + chalk.gray('📁 ') + chalk.gray(opts.projectRoot.length > w - 6
       ? '...' + opts.projectRoot.slice(-(w - 12))
       : opts.projectRoot), w);
-    case 10: return padRight('  ' + chalk.gray('API Usage Billing'), w);
+    case 10: return padRight('', w);
     case 11: return center(chalk.dim('v1.0.0 · Apache-2.0'), w);
     default: return padRight('', w);
   }
