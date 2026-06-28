@@ -135,7 +135,7 @@ function rightPane(row: number, w: number, opts: { hasKey: boolean }): string {
       case 3: return padRight(chalk.gray('/model to switch models'), w);
       case 4: return padRight(chalk.gray('─'.repeat(Math.min(w - 2, 30))), w);
       case 5: return padRight(chalk.bold.white("What's new"), w);
-      case 6: return padRight(chalk.gray('4 models: V3 · R1 · V4-Pro · V4-Flash'), w);
+      case 6: return padRight(chalk.gray('V4-Pro · V4-Flash with thinking'), w);
       case 7: return padRight(chalk.gray('Thinking mode for deep reasoning'), w);
       case 8: return padRight(chalk.gray('Global memory & user profiling'), w);
       case 9: return padRight(chalk.gray('8 tools for full autonomy'), w);

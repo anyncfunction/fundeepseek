@@ -127,8 +127,6 @@ export class SessionManager {
   private estimateCost(): number {
     // Simplified cost estimation
     const rates: Record<string, { input: number; output: number }> = {
-      'deepseek-chat': { input: 0.27, output: 1.10 },
-      'deepseek-reasoner': { input: 0.55, output: 2.19 },
       'deepseek-v4-pro': { input: 1.10, output: 4.40 },
       'deepseek-v4-flash': { input: 0.14, output: 0.55 },
     };

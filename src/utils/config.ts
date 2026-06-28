@@ -9,7 +9,7 @@ import { AppConfig, ModelName, AgentMode, ThinkingMode } from '../types';
 const DEFAULT_CONFIG: AppConfig = {
   version: '1.0.0',
   apiBaseUrl: 'https://api.deepseek.com',
-  defaultModel: 'deepseek-chat',
+  defaultModel: 'deepseek-v4-flash',
   defaultMode: 'auto',
   defaultThinking: 'off',
   maxRetries: 3,

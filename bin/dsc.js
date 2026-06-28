@@ -22,7 +22,7 @@ const SLASH_COMMANDS = [
   { cmd: '/plan', desc: 'Switch to plan mode — plan first, execute after approval' },
   { cmd: '/ask', desc: 'Switch to ask mode — read-only, no modifications' },
   { cmd: '/chat', desc: 'Switch to chat mode — pure conversation, no tools' },
-  { cmd: '/model', desc: 'Switch model: deepseek-chat, deepseek-reasoner, deepseek-v4-pro, deepseek-v4-flash' },
+  { cmd: '/model', desc: 'Switch model: deepseek-v4-pro, deepseek-v4-flash' },
   { cmd: '/thinking', desc: 'Toggle thinking mode: on, off, or auto' },
   { cmd: '/auth', desc: 'Set your DeepSeek API key' },
   { cmd: '/clear', desc: 'Start a new session with empty context; previous session stays on disk' },
@@ -50,7 +50,7 @@ program
   .description('FundeePseek — DeepSeek CLI Coding Agent')
   .version('1.0.0')
   .option('-p, --prompt <text>', 'Single prompt (non-interactive)')
-  .option('-m, --model <name>', 'Model to use')
+  .option('-m, --model <name>', 'Model: deepseek-v4-pro, deepseek-v4-flash')
   .option('-M, --mode <mode>', 'Mode: auto, plan, ask, chat', 'auto')
   .option('-t, --thinking <mode>', 'Thinking: on, off, auto', 'off')
   .option('-r, --resume [id]', 'Resume a session')
@@ -82,7 +82,7 @@ async function main(options) {
 
   const cwd = process.cwd();
   const config = loadConfig(cwd);
-  let currentModel = options.model || config.defaultModel || 'deepseek-chat';
+  let currentModel = options.model || config.defaultModel || 'deepseek-v4-flash';
   let currentMode = options.mode || config.defaultMode || 'auto';
   let currentThinking = options.thinking || config.defaultThinking || 'off';
   let apiKey = options.apiKey || config.apiKey || process.env.DEEPSEEK_API_KEY;
@@ -579,7 +579,7 @@ function handleLocal(input, agent, memory, cwd) {
       chalk.bold.cyan('  FundeePseek v1.0.0 — Release Notes'),
       '',
       chalk.white('  ✨ New:'),
-      chalk.gray('    • 4 models: V3 · R1 · V4-Pro · V4-Flash'),
+      chalk.gray('    • V4-Pro & V4-Flash with thinking mode'),
       chalk.gray('    • Thinking mode for deep reasoning (R1/V4-Pro/V4-Flash)'),
       chalk.gray('    • Interactive terminal UI with instant / autocomplete'),
       chalk.gray('    • Global memory & user profiling'),

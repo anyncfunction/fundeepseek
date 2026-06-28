@@ -3,7 +3,7 @@
 // ============================================================
 
 // ---- Model Configuration ----
-export type ModelName = 'deepseek-chat' | 'deepseek-reasoner' | 'deepseek-v4-pro' | 'deepseek-v4-flash';
+export type ModelName = 'deepseek-v4-pro' | 'deepseek-v4-flash';
 
 export interface ModelConfig {
   name: ModelName;
@@ -11,29 +11,11 @@ export interface ModelConfig {
   maxTokens: number;
   supportsThinking: boolean;
   supportsTools: boolean;
-  costPer1kInput: number;   // in USD
+  costPer1kInput: number;
   costPer1kOutput: number;
 }
 
 export const MODELS: Record<ModelName, ModelConfig> = {
-  'deepseek-chat': {
-    name: 'deepseek-chat',
-    displayName: 'DeepSeek V3 (Chat)',
-    maxTokens: 65536,
-    supportsThinking: false,
-    supportsTools: true,
-    costPer1kInput: 0.00027,
-    costPer1kOutput: 0.00110,
-  },
-  'deepseek-reasoner': {
-    name: 'deepseek-reasoner',
-    displayName: 'DeepSeek R1 (Reasoner)',
-    maxTokens: 65536,
-    supportsThinking: true,
-    supportsTools: true,
-    costPer1kInput: 0.00055,
-    costPer1kOutput: 0.00219,
-  },
   'deepseek-v4-pro': {
     name: 'deepseek-v4-pro',
     displayName: 'DeepSeek V4 Pro',

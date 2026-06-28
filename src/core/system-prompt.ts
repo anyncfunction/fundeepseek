@@ -55,10 +55,7 @@ export function buildSystemPrompt(ctx: PromptContext): string {
 }
 
 function coreIdentity(model: ModelName): string {
-  const modelName = model === 'deepseek-reasoner' ? 'DeepSeek R1' :
-    model === 'deepseek-v4-pro' ? 'DeepSeek V4 Pro' :
-    model === 'deepseek-v4-flash' ? 'DeepSeek V4 Flash' :
-    'DeepSeek V3';
+  const modelName = model === 'deepseek-v4-pro' ? 'DeepSeek V4 Pro' : 'DeepSeek V4 Flash';
 
   return `<system-identity>
 You are **FundeePseek**, a powerful AI coding assistant powered by ${modelName}.

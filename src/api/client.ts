@@ -128,11 +128,10 @@ export class DeepSeekClient extends EventEmitter {
   // ---- Private: HTTP layer ----
 
   private shouldEnableThinking(model?: ModelName, thinking?: ThinkingMode): boolean {
-    if (model === 'deepseek-reasoner') return true; // R1 always thinks
     if (thinking === 'on') return true;
     if (thinking === 'off') return false;
-    // 'auto' for V4 models
-    if (thinking === 'auto' && (model === 'deepseek-v4-pro' || model === 'deepseek-v4-flash')) return true;
+    // 'auto' enables thinking for both V4 models
+    if (thinking === 'auto') return true;
     return false;
   }
 
