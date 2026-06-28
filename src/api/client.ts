@@ -48,19 +48,21 @@ export class DeepSeekClient extends EventEmitter {
       thinking?: ThinkingMode;
     }
   ): Promise<ChatCompletionResponse> {
+    const thinkingOn = this.shouldEnableThinking(options?.model, options?.thinking);
     const request: ChatCompletionRequest = {
-      model: options?.model || 'deepseek-chat',
+      model: options?.model || 'deepseek-v4-flash',
       messages,
       stream: false,
       max_tokens: options?.maxTokens,
-      temperature: options?.temperature ?? 0.1,
-      ...(options?.tools?.length ? { tools: options.tools, tool_choice: 'auto' } : {}),
-      ...(this.shouldEnableThinking(options?.model, options?.thinking)
-        ? { thinking: { type: 'enabled' as const } }
-        : {}),
+      // Don't send temperature when thinking — it has no effect
+      ...(thinkingOn ? {} : { temperature: options?.temperature ?? 0.1 }),
+      // tool_choice not supported in V4 thinking mode
+      ...(options?.tools?.length && !thinkingOn ? { tools: options.tools, tool_choice: 'auto' as const } : {}),
+      ...(options?.tools?.length && thinkingOn ? { tools: options.tools } : {}),
+      ...(thinkingOn ? { thinking: { type: 'enabled' as const } } : {}),
     };
 
-    return this.makeRequest('/v1/chat/completions', request);
+    return this.makeRequest('/chat/completions', request);
   }
 
   /** Streaming chat completion — yields StreamChunk via callback */
@@ -75,19 +77,19 @@ export class DeepSeekClient extends EventEmitter {
       thinking?: ThinkingMode;
     }
   ): Promise<ChatCompletionResponse> {
+    const thinkingOn = this.shouldEnableThinking(options?.model, options?.thinking);
     const request: ChatCompletionRequest = {
-      model: options?.model || 'deepseek-chat',
+      model: options?.model || 'deepseek-v4-flash',
       messages,
       stream: true,
       max_tokens: options?.maxTokens,
-      temperature: options?.temperature ?? 0.1,
-      ...(options?.tools?.length ? { tools: options.tools, tool_choice: 'auto' } : {}),
-      ...(this.shouldEnableThinking(options?.model, options?.thinking)
-        ? { thinking: { type: 'enabled' as const } }
-        : {}),
+      ...(thinkingOn ? {} : { temperature: options?.temperature ?? 0.1 }),
+      ...(options?.tools?.length && !thinkingOn ? { tools: options.tools, tool_choice: 'auto' as const } : {}),
+      ...(options?.tools?.length && thinkingOn ? { tools: options.tools } : {}),
+      ...(thinkingOn ? { thinking: { type: 'enabled' as const } } : {}),
     };
 
-    return this.makeStreamRequest('/v1/chat/completions', request, onChunk);
+    return this.makeStreamRequest('/chat/completions', request, onChunk);
   }
 
   /** FIM (Fill-in-the-Middle) completion — for code completion */

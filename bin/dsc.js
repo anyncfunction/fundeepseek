@@ -52,7 +52,7 @@ program
   .option('-p, --prompt <text>', 'Single prompt (non-interactive)')
   .option('-m, --model <name>', 'Model: deepseek-v4-pro, deepseek-v4-flash')
   .option('-M, --mode <mode>', 'Mode: auto, plan, ask, chat', 'auto')
-  .option('-t, --thinking <mode>', 'Thinking: on, off, auto', 'off')
+  .option('-t, --thinking <mode>', 'Thinking: on, off, auto', 'auto')
   .option('-r, --resume [id]', 'Resume a session')
   .option('-n, --new-session', 'Start fresh')
   .option('--init', 'Initialize in current directory')
@@ -84,7 +84,7 @@ async function main(options) {
   const config = loadConfig(cwd);
   let currentModel = options.model || config.defaultModel || 'deepseek-v4-flash';
   let currentMode = options.mode || config.defaultMode || 'auto';
-  let currentThinking = options.thinking || config.defaultThinking || 'off';
+  let currentThinking = options.thinking || config.defaultThinking || 'auto';
   let apiKey = options.apiKey || config.apiKey || process.env.DEEPSEEK_API_KEY;
 
   const memory = new GlobalMemory();

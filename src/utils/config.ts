@@ -11,7 +11,7 @@ const DEFAULT_CONFIG: AppConfig = {
   apiBaseUrl: 'https://api.deepseek.com',
   defaultModel: 'deepseek-v4-flash',
   defaultMode: 'auto',
-  defaultThinking: 'off',
+  defaultThinking: 'auto',
   maxRetries: 3,
   timeout: 180000,
   colors: true,

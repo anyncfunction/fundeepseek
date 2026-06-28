@@ -94,7 +94,7 @@ export class ContextManager {
   /** Get messages suitable for sending to API (filtered, truncated if needed) */
   getMessagesForAPI(maxTokens?: number): Message[] {
     const limit = maxTokens || MODELS[this.model].maxTokens;
-    let messages = [...this.messages];
+    let messages = this.prepareMessages([...this.messages]);
     let tokens = this.tokenEstimateCallback(messages);
 
     // If under budget, return all
@@ -121,6 +121,38 @@ export class ContextManager {
     }
 
     return [...systemMsgs, ...kept];
+  }
+
+  /**
+   * Prepare messages for API: strip reasoning_content from
+   * assistant messages NOT in a tool-call chain.
+   *
+   * Rule: reasoning_content MUST be preserved between tool-call turns,
+   * but must be STRIPPED between non-tool-call turns (user→assistant→user).
+   */
+  private prepareMessages(messages: Message[]): Message[] {
+    const result: Message[] = [];
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      if (msg.role === 'assistant' && 'reasoning_content' in msg) {
+        const hasToolCalls = 'tool_calls' in msg && msg.tool_calls && msg.tool_calls.length > 0;
+        // Check if next message is a tool result (part of tool chain)
+        const nextMsg = messages[i + 1];
+        const isInToolChain = nextMsg?.role === 'tool';
+
+        if (hasToolCalls || isInToolChain) {
+          // Preserve reasoning_content — part of tool chain
+          result.push(msg);
+        } else {
+          // Strip reasoning_content — final answer between user turns
+          const { reasoning_content, ...rest } = msg as any;
+          result.push(rest);
+        }
+      } else {
+        result.push(msg);
+      }
+    }
+    return result;
   }
 
   /** Compact the context: keep system + summarize older messages */
