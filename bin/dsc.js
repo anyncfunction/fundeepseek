@@ -469,8 +469,19 @@ async function interactiveLoop(agent, memory, cwd, currentModel, currentMode, cu
       return;
     }
 
-    // Escape sequences
+    // Ctrl+T — toggle thinking expand
+    if (code === 20) {
+      renderer.toggleThinkingExpand();
+      return;
+    }
+
+    // Escape sequences (Esc key)
     if (code === 27) {
+      if (renderer.isThinkingVisible()) {
+        renderer.dismissThinking();
+        drawPrompt();
+        return;
+      }
       hideSlashMenu();
       drawPrompt();
       return;

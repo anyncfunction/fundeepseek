@@ -206,35 +206,110 @@ export function getPrompt(): string {
 }
 
 // ═══════════════════════════════════════════════════════════
-// SECTION: Thinking Display
+// SECTION: Thinking Display — collapsible box with timer
 // ═══════════════════════════════════════════════════════════
 
 let thinkingActive = false;
 let thinkingLines: string[] = [];
+let thinkingStartTime = 0;
+let thinkingTimer: ReturnType<typeof setInterval> | null = null;
+let thinkingExpanded = false;
+let thinkingEnded = false;
 
 export function startThinking(): void {
   thinkingActive = true;
+  thinkingEnded = false;
+  thinkingExpanded = false;
   thinkingLines = [];
-  process.stdout.write(chalk.yellow.bold('\n  🤔 Thinking') + chalk.gray(' ·'.repeat(10)) + '\n');
+  thinkingStartTime = Date.now();
+
+  // Show timer line
+  const draw = () => {
+    if (!thinkingActive) return;
+    const elapsed = Math.floor((Date.now() - thinkingStartTime) / 1000);
+    process.stdout.write('\r\x1b[2K\r');
+    process.stdout.write(chalk.yellow.bold('  🤔 thinking…') + chalk.gray(` (${elapsed}s · thinking)`));
+  };
+  draw();
+  thinkingTimer = setInterval(draw, 500);
 }
 
 export function appendThinking(text: string): void {
   if (!thinkingActive) startThinking();
-  // Show just recent line
   thinkingLines.push(text);
-  const recent = thinkingLines[thinkingLines.length - 1];
-  if (recent) {
-    process.stdout.write(chalk.yellow.dim('  ' + recent.slice(0, termWidth() - 4)) + '\n');
-  }
 }
 
 export function endThinking(): void {
   if (!thinkingActive) return;
   thinkingActive = false;
-  process.stdout.write(chalk.gray('  ' + '─'.repeat(Math.min(termWidth() - 4, 50))) + '\n\n');
+  thinkingEnded = true;
+  if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
+
+  const elapsed = Math.floor((Date.now() - thinkingStartTime) / 1000);
+  const totalLines = thinkingLines.length;
+  const previewLines = thinkingLines.slice(-5);
+
+  // Build collapsed box
+  const w = Math.min(termWidth() - 4, 70);
+  process.stdout.write('\r\x1b[2K\r');
+  process.stdout.write(chalk.yellow.bold('  🤔 thinking…') + chalk.gray(` (${elapsed}s · ${totalLines} lines)`) + '\n');
+
+  // Show preview box
+  const boxTop = chalk.gray('  ┌' + '─'.repeat(w) + '┐');
+  const boxBot = chalk.gray('  └' + '─'.repeat(w) + '┘');
+  const hint = chalk.gray('  │ ') + chalk.cyan('Ctrl+T') + chalk.gray(' to expand  ·  ') + chalk.cyan('Esc') + chalk.gray(' to dismiss') + chalk.gray(' │').padEnd(w + 5);
+
+  process.stdout.write(boxTop + '\n');
+  for (const line of previewLines) {
+    const trimmed = line.slice(0, w);
+    process.stdout.write(chalk.gray('  │ ') + chalk.yellow.dim(trimmed) + ' '.repeat(Math.max(0, w - stripLen(trimmed))) + chalk.gray(' │') + '\n');
+  }
+  process.stdout.write(hint + '\n');
+  process.stdout.write(boxBot + '\n');
+}
+
+export function toggleThinkingExpand(): void {
+  if (!thinkingEnded) return;
+  thinkingExpanded = !thinkingExpanded;
+
+  const w = Math.min(termWidth() - 4, 70);
+  if (thinkingExpanded) {
+    // Show full content
+    const totalLines = thinkingLines.length;
+    process.stdout.write(chalk.gray('  ┌─ Full thinking (' + totalLines + ' lines) ' + '─'.repeat(Math.max(0, w - 24 - String(totalLines).length)) + '┐\n'));
+    for (const line of thinkingLines) {
+      const trimmed = line.slice(0, w);
+      process.stdout.write(chalk.gray('  │ ') + chalk.yellow.dim(trimmed) + ' '.repeat(Math.max(0, w - stripLen(trimmed))) + chalk.gray(' │') + '\n');
+    }
+    process.stdout.write(chalk.gray('  │ ') + chalk.cyan('Ctrl+T') + chalk.gray(' to collapse  ·  ') + chalk.cyan('Esc') + chalk.gray(' to dismiss') + chalk.gray(' │').padEnd(w + 5) + '\n');
+    process.stdout.write(chalk.gray('  └' + '─'.repeat(w) + '┘\n'));
+  } else {
+    // Back to collapsed
+    const previewLines = thinkingLines.slice(-5);
+    process.stdout.write(chalk.gray('  ┌' + '─'.repeat(w) + '┐\n'));
+    for (const line of previewLines) {
+      const trimmed = line.slice(0, w);
+      process.stdout.write(chalk.gray('  │ ') + chalk.yellow.dim(trimmed) + ' '.repeat(Math.max(0, w - stripLen(trimmed))) + chalk.gray(' │') + '\n');
+    }
+    const hint = chalk.gray('  │ ') + chalk.cyan('Ctrl+T') + chalk.gray(' to expand  ·  ') + chalk.cyan('Esc') + chalk.gray(' to dismiss') + chalk.gray(' │').padEnd(w + 5);
+    process.stdout.write(hint + '\n');
+    process.stdout.write(chalk.gray('  └' + '─'.repeat(w) + '┘\n'));
+  }
+}
+
+export function dismissThinking(): void {
+  thinkingEnded = false;
+  thinkingLines = [];
+  thinkingExpanded = false;
+  process.stdout.write('\r\x1b[2K\r'); // Clear timer line
 }
 
 export function isThinking(): boolean { return thinkingActive; }
+export function isThinkingVisible(): boolean { return thinkingEnded; }
+
+function stripLen(s: string): number {
+  return s.replace(/\x1b\[[0-9;]*m/g, '').length;
+}
 
 // ═══════════════════════════════════════════════════════════
 // SECTION: Streaming Output
