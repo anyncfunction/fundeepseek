@@ -3,6 +3,7 @@
 // FundeePseek CLI — Claude Code style interactive terminal
 // ╭─ header ─╮  two-column welcome  ╰─ footer ─╯
 // ═══════════  > prompt  ═══════════  ◈ status bar
+// Type / to auto-show command menu
 // ============================================================
 const chalk = require('chalk');
 const path = require('path');
@@ -13,7 +14,7 @@ let Agent, GlobalMemory, loadConfig, initProject, SessionStorage;
 let renderer;
 
 // ═══════════════════════════════════════════════════════════
-// Slash commands with descriptions (for autocomplete)
+// Slash commands
 // ═══════════════════════════════════════════════════════════
 
 const SLASH_COMMANDS = [
@@ -24,16 +25,16 @@ const SLASH_COMMANDS = [
   { cmd: '/model', desc: 'Switch model: deepseek-chat, deepseek-reasoner, deepseek-v4-pro, deepseek-v4-flash' },
   { cmd: '/thinking', desc: 'Toggle thinking mode: on, off, or auto' },
   { cmd: '/auth', desc: 'Set your DeepSeek API key' },
-  { cmd: '/clear', desc: 'Start a new session with empty context' },
+  { cmd: '/clear', desc: 'Start a new session with empty context; previous session stays on disk' },
   { cmd: '/compact', desc: 'Show context window usage statistics' },
   { cmd: '/usage', desc: 'Show token usage and estimated cost' },
   { cmd: '/profile', desc: 'Show your learned coding profile' },
-  { cmd: '/remember', desc: 'Save a fact to global memory' },
+  { cmd: '/remember', desc: 'Save a fact to global memory for future sessions' },
   { cmd: '/memories', desc: 'List saved global memories' },
-  { cmd: '/forget', desc: 'Delete a memory by its name' },
+  { cmd: '/forget', desc: 'Delete a memory by its slug' },
   { cmd: '/resume', desc: 'Resume a previous session' },
-  { cmd: '/sessions', desc: 'List all saved sessions' },
-  { cmd: '/release-notes', desc: 'Show what\'s new in this version' },
+  { cmd: '/sessions', desc: 'List all saved sessions in this project' },
+  { cmd: '/release-notes', desc: 'Show what\'s new in FundeePseek' },
   { cmd: '/help', desc: 'Show all available commands' },
   { cmd: '/exit', desc: 'Exit FundeePseek and save session' },
 ];
@@ -66,7 +67,6 @@ program
   .action(main);
 
 async function main(options) {
-  // Load compiled modules
   try {
     const mod = require('../dist/index');
     Agent = mod.Agent; GlobalMemory = mod.GlobalMemory;
@@ -78,19 +78,17 @@ async function main(options) {
     process.exit(1);
   }
 
-  // Offline commands
   if (options.init) { initProject(process.cwd()); console.log('✓ Initialized'); return; }
 
   const cwd = process.cwd();
   const config = loadConfig(cwd);
-  const model = options.model || config.defaultModel || 'deepseek-chat';
-  const mode = options.mode || config.defaultMode || 'auto';
-  const thinking = options.thinking || config.defaultThinking || 'off';
+  let currentModel = options.model || config.defaultModel || 'deepseek-chat';
+  let currentMode = options.mode || config.defaultMode || 'auto';
+  let currentThinking = options.thinking || config.defaultThinking || 'off';
   let apiKey = options.apiKey || config.apiKey || process.env.DEEPSEEK_API_KEY;
 
   const memory = new GlobalMemory();
 
-  // Quick offline commands
   if (options.profile) { console.log(memory.getProfileSummary()); return; }
   if (options.memories) { listMemoriesCli(memory); return; }
   if (options.remember) { await memory.rememberFact(options.remember); console.log('✓ Saved'); return; }
@@ -98,14 +96,12 @@ async function main(options) {
   if (options.listSessions) { listSessionsCli(cwd); return; }
   if (options.export) { exportSessionCli(cwd, options.export); return; }
 
-  // Single prompt needs key
   if (options.prompt && !apiKey) {
     console.error('✗ No API key. Use --api-key or set DEEPSEEK_API_KEY'); process.exit(1);
   }
 
   // Lazy agent
   let agent = null;
-  let currentModel = model, currentMode = mode, currentThinking = thinking;
 
   function createAgent(key) {
     apiKey = key;
@@ -121,7 +117,7 @@ async function main(options) {
         memories: memory.getRelevantMemories(),
       },
     });
-    wireEvents(agent, memory);
+    wireEvents(agent);
     return agent;
   }
 
@@ -145,261 +141,430 @@ async function main(options) {
     return;
   }
 
-  // ── Interactive mode ──
+  // ══════ Interactive Mode ══════
   renderer.clearScreen();
-
-  // Show welcome panel
   console.log(renderer.renderWelcome({
     model: currentModel, mode: currentMode, projectRoot: cwd, hasKey: !!agent,
   }));
-
-  // Status bar
   console.log(renderer.renderStatusBar({ mode: currentMode, model: currentModel, thinking: currentThinking }));
-
-  // Divider
   console.log(renderer.renderDivider());
 
-  // If has key, resume session
   if (agent && !options.newSession) {
     const resumed = tryResume(cwd, agent, options.resume);
     if (resumed) { renderer.info('Session resumed. /clear to start fresh.'); }
   }
 
-  // ══════ Readline with autocomplete ══════
-  const rl = readline.createInterface({
-    input: process.stdin, output: process.stdout,
-    prompt: renderer.getPrompt(),
-    terminal: true, historySize: 1000,
-    completer: slashCompleter,
-  });
+  // ══════ Raw-mode input with / autocomplete ══════
+  await interactiveLoop(agent, memory, cwd, currentModel, currentMode, currentThinking);
+}
 
-  rl.prompt();
+// ═══════════════════════════════════════════════════════════
+// Interactive Loop — raw stdin for instant / menu
+// ═══════════════════════════════════════════════════════════
 
-  // Show status bar again before each prompt
-  let lastMode = currentMode, lastModel = currentModel;
-  const usage = agent ? agent.getUsage() : { totalTokens: 0, cost: 0 };
+async function interactiveLoop(agent, memory, cwd, currentModel, currentMode, currentThinking) {
+  let line = '';
+  let cursor = 0;
+  let slashMenuShown = false;
+  let slashFilter = '';
+  let historyIdx = -1;
+  const history = [];
+  let promptStr = renderer.getPrompt();
+  let thinkingOn = false;
 
-  rl.on('line', async (line) => {
-    const input = line.trim();
+  const stdin = process.stdin;
+  const stdout = process.stdout;
 
-    // Always re-show status + divider if model/mode changed
-    if (currentMode !== lastMode || currentModel !== lastModel) {
-      lastMode = currentMode; lastModel = currentModel;
-      console.log(renderer.renderDivider());
+  stdin.setRawMode(true);
+  stdin.resume();
+  stdin.setEncoding('utf-8');
+
+  // Render prompt
+  function drawPrompt() {
+    stdout.write('\r\x1b[2K\r'); // Clear line
+    if (slashMenuShown) {
+      stdout.write(renderer.renderDivider() + '\n');
+      renderSlashMenu(slashFilter);
+      stdout.write(renderer.renderDivider() + '\n');
+      stdout.write(renderer.renderStatusBar({ mode: currentMode, model: currentModel, thinking: currentThinking }) + '\n');
     }
+    stdout.write(promptStr + line);
+    // Move cursor
+    if (cursor < line.length) {
+      const back = line.length - cursor;
+      stdout.write(`\x1b[${back}D`);
+    }
+  }
 
-    if (!input) {
-      console.log(renderer.renderDivider());
-      console.log(renderer.renderStatusBar({
-        mode: currentMode, model: currentModel, thinking: currentThinking,
-        tokens: agent?.getUsage().totalTokens, cost: agent?.getUsage().cost,
-      }));
-      rl.setPrompt(renderer.getPrompt());
-      rl.prompt();
+  function renderSlashMenu(filter) {
+    const w = process.stdout.columns || 80;
+    const q = (filter || '').toLowerCase();
+    const matches = SLASH_COMMANDS.filter(c =>
+      !q || c.cmd.toLowerCase().includes(q) || c.desc.toLowerCase().includes(q)
+    );
+    if (matches.length === 0) {
+      stdout.write(chalk.gray('  No matching commands\n'));
       return;
     }
-
-    // Exit
-    if (input === '/exit' || input === '/quit') {
-      console.log(chalk.gray('\n  Goodbye! 👋\n'));
-      if (agent) saveSession(cwd, agent, memory);
-      rl.close();
-      return;
+    const maxCmd = Math.max(...matches.map(m => m.cmd.length));
+    for (const m of matches) {
+      const cmd = chalk.cyan(m.cmd.padEnd(maxCmd + 4));
+      const desc = chalk.gray(m.desc.slice(0, w - maxCmd - 8));
+      stdout.write(cmd + desc + '\n');
     }
+  }
 
-    // ══════ /auth ══════
-    if (input.startsWith('/auth ') || input.startsWith('/key ')) {
-      const key = input.replace(/^\/(auth|key)\s+/, '').trim();
-      if (!key || key.length < 10) { renderer.error('Invalid key'); rl.prompt(); return; }
-      saveGlobalKey(key);
-      createAgent(key);
-      renderer.clearScreen();
-      console.log(renderer.renderWelcome({
-        model: currentModel, mode: currentMode, projectRoot: cwd, hasKey: true,
-      }));
-      if (!options.newSession) {
-        const resumed = tryResume(cwd, agent, options.resume);
-        if (resumed) renderer.info('Session resumed.');
-      }
-      console.log(renderer.renderDivider());
-      console.log(renderer.renderStatusBar({
-        mode: currentMode, model: currentModel, thinking: currentThinking,
-      }));
-      rl.setPrompt(renderer.getPrompt());
-      rl.prompt();
-      return;
+  function hideSlashMenu() {
+    if (slashMenuShown) {
+      slashMenuShown = false;
+      slashFilter = '';
+      // Clear any menu lines that might remain (approximate)
+      stdout.write('\x1b[2K\r');
+      drawPrompt();
     }
+  }
 
-    // ══════ No agent yet ══════
-    if (!agent) {
-      console.log(chalk.yellow('\n  👋 First, set your API key:'));
-      console.log(chalk.cyan('  /auth sk-your-deepseek-api-key\n'));
-      console.log(renderer.renderDivider());
-      console.log(renderer.renderStatusBar({ mode: currentMode, model: currentModel, thinking: currentThinking }));
-      rl.setPrompt(renderer.getPrompt());
-      rl.prompt();
-      return;
+  function showSlashMenu() {
+    slashMenuShown = true;
+    slashFilter = line.slice(1);
+    drawPrompt();
+  }
+
+  function redraw() {
+    // Clear prompt area and redraw
+    stdout.write('\r\x1b[2K\r');
+    if (slashMenuShown) {
+      stdout.write(renderer.renderDivider() + '\n');
+      renderSlashMenu(slashFilter);
+      stdout.write(renderer.renderDivider() + '\n');
+      stdout.write(renderer.renderStatusBar({ mode: currentMode, model: currentModel, thinking: currentThinking }) + '\n');
     }
-
-    // ══════ Local slash commands ══════
-    const localResult = handleLocal(input, agent, memory, cwd, rl);
-    if (localResult === 'HANDLED') {
-      // Update mode/model if changed
-      if (input.startsWith('/model ')) {
-        currentModel = input.slice(7).trim();
-        updateStatus(agent, memory, currentMode, currentModel, currentThinking);
-        rl.setPrompt(renderer.getPrompt());
-        rl.prompt();
-        return;
-      }
-      if (['/auto', '/plan', '/ask', '/chat'].includes(input)) {
-        currentMode = input.slice(1);
-        lastMode = currentMode;
-        updateStatus(agent, memory, currentMode, currentModel, currentThinking);
-        rl.setPrompt(renderer.getPrompt());
-        rl.prompt();
-        return;
-      }
-      if (input.startsWith('/thinking ')) {
-        currentThinking = input.slice(10).trim();
-        agent.agentConfig.thinking = currentThinking;
-        console.log(chalk.green(`  ✓ Thinking: ${currentThinking}`));
-        updateStatus(agent, memory, currentMode, currentModel, currentThinking);
-        rl.setPrompt(renderer.getPrompt());
-        rl.prompt();
-        return;
-      }
-      updateStatus(agent, memory, currentMode, currentModel, currentThinking);
-      rl.setPrompt(renderer.getPrompt());
-      rl.prompt();
-      return;
+    stdout.write(promptStr + line);
+    if (cursor < line.length) {
+      stdout.write(`\x1b[${line.length - cursor}D`);
     }
+  }
 
-    // ══════ Agent turn ══════
-    renderer.blank();
+  function insertAtCursor(text) {
+    line = line.slice(0, cursor) + text + line.slice(cursor);
+    cursor += text.length;
+  }
+
+  function deleteBeforeCursor() {
+    if (cursor > 0) {
+      line = line.slice(0, cursor - 1) + line.slice(cursor);
+      cursor--;
+    }
+  }
+
+  function deleteAtCursor() {
+    if (cursor < line.length) {
+      line = line.slice(0, cursor) + line.slice(cursor + 1);
+    }
+  }
+
+  // Handle agent response (shared between agent chat and local commands)
+  async function handleAgentInput(input) {
     const t0 = Date.now();
-
     try {
       await agent.chat(input);
     } catch (err) {
       renderer.error('Error: ' + err.message);
     }
-
     const elapsed = Date.now() - t0;
     memory.learnFromMessages(agent.exportContext());
     const u = agent.getUsage();
-
-    // Status line
     if (u.totalTokens > 0) {
-      process.stdout.write(chalk.gray(`  ⏱ ${fmtDur(elapsed)} · ${u.totalTokens.toLocaleString()} tok · $${u.cost.toFixed(4)}`));
+      stdout.write(chalk.gray(`  ⏱ ${fmtDur(elapsed)} · ${u.totalTokens.toLocaleString()} tok · $${u.cost.toFixed(4)}`));
     }
-    renderer.blank();
-    renderer.blank();
+    stdout.write('\n\n');
+  }
 
-    // Re-show divider + status
-    console.log(renderer.renderDivider());
-    console.log(renderer.renderStatusBar({
-      mode: currentMode, model: currentModel, thinking: currentThinking,
-      tokens: u.totalTokens, cost: u.cost,
-    }));
-    rl.setPrompt(renderer.getPrompt());
-    rl.prompt();
+  drawPrompt();
+
+  stdin.on('data', async (key) => {
+    const code = key.charCodeAt(0);
+
+    // Ctrl+C
+    if (code === 3) {
+      if (line.length > 0) {
+        line = ''; cursor = 0; hideSlashMenu();
+        stdout.write('^C\n');
+        stdout.write(renderer.renderDivider() + '\n');
+        stdout.write(renderer.renderStatusBar({ mode: currentMode, model: currentModel, thinking: currentThinking }) + '\n');
+        drawPrompt();
+        return;
+      }
+      stdout.write('\n  Goodbye! 👋\n\n');
+      if (agent) saveSession(cwd, agent, memory);
+      stdin.setRawMode(false);
+      process.exit(0);
+    }
+
+    // Ctrl+D (EOF)
+    if (code === 4) {
+      if (line.length === 0) {
+        stdout.write('\n  Goodbye! 👋\n\n');
+        if (agent) saveSession(cwd, agent, memory);
+        stdin.setRawMode(false);
+        process.exit(0);
+      }
+      return;
+    }
+
+    // Enter
+    if (code === 13) {
+      hideSlashMenu();
+      stdout.write('\n');
+
+      const input = line.trim();
+      line = ''; cursor = 0;
+      history.push(input);
+      historyIdx = history.length;
+
+      if (!input) {
+        stdout.write(renderer.renderDivider() + '\n');
+        stdout.write(renderer.renderStatusBar({ mode: currentMode, model: currentModel, thinking: currentThinking }) + '\n');
+        drawPrompt();
+        return;
+      }
+
+      if (input === '/exit' || input === '/quit') {
+        stdout.write(chalk.gray('  Goodbye! 👋\n\n'));
+        if (agent) saveSession(cwd, agent, memory);
+        stdin.setRawMode(false);
+        process.exit(0);
+        return;
+      }
+
+      // /auth
+      if (input.startsWith('/auth ') || input.startsWith('/key ')) {
+        const key = input.replace(/^\/(auth|key)\s+/, '').trim();
+        if (!key || key.length < 10) {
+          renderer.error('Invalid key. Format: /auth sk-xxxxxxxx');
+        } else {
+          saveGlobalKey(key);
+          createAgent(key);
+          memory.learnFromMessages([]);
+          renderer.clearScreen();
+          stdout.write(renderer.renderWelcome({
+            model: currentModel, mode: currentMode, projectRoot: cwd, hasKey: true,
+          }));
+        }
+        stdout.write(renderer.renderDivider() + '\n');
+        stdout.write(renderer.renderStatusBar({ mode: currentModel, model: currentModel, thinking: currentThinking }) + '\n');
+        drawPrompt();
+        return;
+      }
+
+      // No agent yet
+      if (!agent) {
+        stdout.write(chalk.yellow('\n  👋 First, set your API key:\n'));
+        stdout.write(chalk.cyan('  /auth sk-your-deepseek-api-key\n\n'));
+        stdout.write(renderer.renderDivider() + '\n');
+        stdout.write(renderer.renderStatusBar({ mode: currentMode, model: currentModel, thinking: currentThinking }) + '\n');
+        drawPrompt();
+        return;
+      }
+
+      // Local commands
+      if (input.startsWith('/')) {
+        const localResult = handleLocal(input, agent, memory, cwd);
+        if (localResult === 'HANDLED') {
+          if (input.startsWith('/model ')) currentModel = input.slice(7).trim();
+          if (['/auto', '/plan', '/ask', '/chat'].includes(input)) currentMode = input.slice(1);
+          if (input.startsWith('/thinking ')) currentThinking = input.slice(10).trim();
+          stdout.write(renderer.renderDivider() + '\n');
+          stdout.write(renderer.renderStatusBar({
+            mode: currentMode, model: currentModel, thinking: currentThinking,
+            tokens: agent?.getUsage().totalTokens, cost: agent?.getUsage().cost,
+          }) + '\n');
+          drawPrompt();
+          return;
+        }
+      }
+
+      // Agent turn
+      stdout.write('\n');
+      await handleAgentInput(input);
+      stdout.write(renderer.renderDivider() + '\n');
+      const u = agent.getUsage();
+      stdout.write(renderer.renderStatusBar({
+        mode: currentMode, model: currentModel, thinking: currentThinking,
+        tokens: u.totalTokens, cost: u.cost,
+      }) + '\n');
+      drawPrompt();
+      return;
+    }
+
+    // Backspace
+    if (code === 127) {
+      if (slashMenuShown && line === '/') {
+        hideSlashMenu();
+        line = ''; cursor = 0;
+        drawPrompt();
+        return;
+      }
+      deleteBeforeCursor();
+      if (slashMenuShown) {
+        slashFilter = line.slice(1);
+      }
+      drawPrompt();
+      return;
+    }
+
+    // Tab — complete slash command
+    if (code === 9) {
+      if (slashMenuShown) {
+        const q = slashFilter.toLowerCase();
+        const matches = SLASH_COMMANDS.filter(c => c.cmd.slice(1).startsWith(q));
+        if (matches.length === 1) {
+          line = matches[0].cmd + ' ';
+          cursor = line.length;
+          hideSlashMenu();
+        }
+      }
+      drawPrompt();
+      return;
+    }
+
+    // Up arrow — history
+    if (key === '\x1b[A') {
+      hideSlashMenu();
+      if (historyIdx > 0) {
+        historyIdx--;
+        line = history[historyIdx] || '';
+        cursor = line.length;
+      }
+      drawPrompt();
+      return;
+    }
+
+    // Down arrow — history
+    if (key === '\x1b[D') {
+      hideSlashMenu();
+      if (historyIdx < history.length - 1) {
+        historyIdx++;
+        line = history[historyIdx] || '';
+      } else {
+        historyIdx = history.length;
+        line = '';
+      }
+      cursor = line.length;
+      drawPrompt();
+      return;
+    }
+
+    // Left arrow
+    if (key === '\x1b[C') {
+      if (cursor > 0) cursor--;
+      drawPrompt();
+      return;
+    }
+
+    // Right arrow
+    if (key === '\x1b[B') {
+      if (cursor < line.length) cursor++;
+      drawPrompt();
+      return;
+    }
+
+    // Escape sequences
+    if (code === 27) {
+      hideSlashMenu();
+      drawPrompt();
+      return;
+    }
+
+    // Ignore other control chars
+    if (code < 32) return;
+
+    // Printable character
+    const char = key;
+    insertAtCursor(char);
+
+    // Auto-show slash menu when first char is /
+    if (!slashMenuShown && line === '/') {
+      showSlashMenu();
+    } else if (slashMenuShown) {
+      // Update filter
+      if (line.startsWith('/')) {
+        slashFilter = line.slice(1);
+        drawPrompt();
+      } else {
+        hideSlashMenu();
+        drawPrompt();
+      }
+    } else {
+      drawPrompt();
+    }
   });
 
-  rl.on('close', () => { console.log(''); process.exit(0); });
+  // Wait forever
+  return new Promise(() => {});
 }
 
 // ═══════════════════════════════════════════════════════════
-// Slash Autocomplete — /<tab> shows all commands
+// Local command handler (returns 'HANDLED' or null)
 // ═══════════════════════════════════════════════════════════
 
-function slashCompleter(line) {
-  if (!line.startsWith('/')) return [[], line];
+function handleLocal(input, agent, memory, cwd) {
+  const stdout = process.stdout;
 
-  const partial = line.slice(1).toLowerCase();
-  const matches = SLASH_COMMANDS.filter(c => c.cmd.slice(1).startsWith(partial));
-
-  if (matches.length === 1) {
-    // Single match — complete the command
-    return [[matches[0].cmd + ' '], line];
-  }
-
-  if (matches.length > 1) {
-    // Multiple matches — show menu
-    const maxCmdLen = Math.max(...matches.map(m => m.cmd.length));
-    const w = process.stdout.columns || 80;
-    const colW = Math.min(w - 4, 80);
-
-    console.log('');
-    console.log(renderer.renderDivider());
-
-    for (const m of matches) {
-      const cmd = chalk.cyan(m.cmd.padEnd(maxCmdLen + 4));
-      const desc = chalk.gray(m.desc.slice(0, colW - maxCmdLen - 6));
-      console.log(cmd + desc);
-    }
-
-    console.log(renderer.renderDivider());
-    console.log(renderer.renderStatusBar({ mode: 'auto', model: 'deepseek-chat', thinking: 'off' }));
-    // Redraw prompt with partial input
-    process.stdout.write(renderer.getPrompt() + line);
-  }
-
-  return [[], line];
-}
-
-// ═══════════════════════════════════════════════════════════
-// Local command handler
-// ═══════════════════════════════════════════════════════════
-
-function handleLocal(input, agent, memory, cwd, rl) {
   if (input === '/help') {
     const w = process.stdout.columns || 80;
-    console.log('');
-    console.log(chalk.cyan('╭' + '─'.repeat(w - 2) + '╮'));
-    console.log(chalk.cyan('│') + centerText(chalk.bold(' FundeePseek Commands '), w - 2) + chalk.cyan('│'));
-    console.log(chalk.cyan('│') + ' '.repeat(w - 2) + chalk.cyan('│'));
-
+    stdout.write('\n');
+    stdout.write(chalk.cyan('╭' + '─'.repeat(w - 2) + '╮\n'));
+    stdout.write(chalk.cyan('│') + centerText(chalk.bold(' FundeePseek Commands '), w - 2) + chalk.cyan('│\n'));
+    stdout.write(chalk.cyan('│') + ' '.repeat(w - 2) + chalk.cyan('│\n'));
     const maxCmd = Math.max(...SLASH_COMMANDS.map(c => c.cmd.length));
     for (const c of SLASH_COMMANDS) {
       const cmd = chalk.cyan(c.cmd.padEnd(maxCmd + 2));
-      const desc = chalk.gray(c.desc);
-      const pad = Math.max(0, w - 4 - maxCmd - 2 - c.desc.length);
-      console.log(chalk.cyan('│ ') + cmd + desc + ' '.repeat(pad) + chalk.cyan(' │'));
+      stdout.write(chalk.cyan('│ ') + cmd + chalk.gray(c.desc) + chalk.cyan(' │\n'));
     }
-
-    console.log(chalk.cyan('╰' + '─'.repeat(w - 2) + '╯'));
-    console.log('');
+    stdout.write(chalk.cyan('╰' + '─'.repeat(w - 2) + '╯\n'));
+    stdout.write('\n');
     return 'HANDLED';
   }
 
   if (input === '/profile') {
-    console.log('\n' + memory.getProfileSummary() + '\n');
+    try { stdout.write('\n' + memory.getProfileSummary() + '\n'); } catch {}
     return 'HANDLED';
   }
 
   if (input === '/memories') {
-    const mems = memory.listMemories();
-    if (mems.length === 0) { renderer.info('No memories yet.'); }
-    else { for (const m of mems.slice(0, 10)) console.log(chalk.cyan(`  [${m.metadata.type}]`) + ' ' + m.description); }
+    try {
+      const mems = memory.listMemories();
+      if (!mems.length) { stdout.write(chalk.gray('  No memories yet.\n')); }
+      else { for (const m of mems.slice(0, 15)) stdout.write(chalk.cyan(`  [${m.metadata.type}] `) + m.description + '\n'); }
+    } catch {}
     return 'HANDLED';
   }
 
   if (input.startsWith('/remember ')) {
-    memory.rememberFact(input.slice(10).trim());
-    renderer.success('Saved to memory.');
+    try { memory.rememberFact(input.slice(10).trim()); stdout.write(chalk.green('  ✓ Saved.\n')); } catch {}
     return 'HANDLED';
   }
 
   if (input.startsWith('/forget ')) {
-    const ok = memory.forget(input.slice(8).trim());
-    console.log(ok ? chalk.green('  ✓ Deleted') : chalk.red('  ✗ Not found'));
+    try {
+      const ok = memory.forget(input.slice(8).trim());
+      stdout.write((ok ? chalk.green('  ✓ Deleted') : chalk.red('  ✗ Not found')) + '\n');
+    } catch {}
+    return 'HANDLED';
+  }
+  if (input === '/sessions') { listSessionsCli(cwd); return 'HANDLED'; }
+
+  if (input.startsWith('/resume')) {
+    const id = input.slice(8).trim() || undefined;
+    const resumed = tryResume(cwd, agent, id);
+    stdout.write((resumed ? chalk.green('  ✓ Resumed') : chalk.red('  ✗ No session found')) + '\n');
     return 'HANDLED';
   }
 
   if (input === '/release-notes') {
-    console.log([
-      '',
+    stdout.write([
+      '\n',
       chalk.bold.cyan('  FundeePseek v1.0.0 — Release Notes'),
       '',
       chalk.white('  ✨ New:'),
@@ -410,24 +575,12 @@ function handleLocal(input, agent, memory, cwd, rl) {
       chalk.gray('    • 8 tools: Read/Write/Edit/Bash/Grep/Glob/Git/Web'),
       chalk.gray('    • Session persistence & resume'),
       chalk.gray('    • /auth for no-config startup'),
-      '',
+      '\n',
     ].join('\n'));
     return 'HANDLED';
   }
 
-  if (input === '/sessions') {
-    listSessionsCli(cwd);
-    return 'HANDLED';
-  }
-
-  if (input.startsWith('/resume')) {
-    const id = input.slice(8).trim() || undefined;
-    const resumed = tryResume(cwd, agent, id);
-    console.log(resumed ? chalk.green('  ✓ Resumed') : chalk.red('  ✗ No session found'));
-    return 'HANDLED';
-  }
-
-  return null; // pass to agent
+  return null;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -436,7 +589,7 @@ function handleLocal(input, agent, memory, cwd, rl) {
 
 let thinkingOn = false;
 
-function wireEvents(agent, memory) {
+function wireEvents(agent) {
   agent.removeAllListeners();
   agent.on('thinking', (t) => {
     if (!thinkingOn) { renderer.startThinking(); thinkingOn = true; }
@@ -493,6 +646,7 @@ function saveGlobalKey(key) {
 
 function tryResume(root, agent, id) {
   try {
+    if (!agent) return false;
     const storage = new SessionStorage(root);
     const session = (id === true || !id) ? storage.getLatest() : storage.load(id);
     if (session?.messages?.length > 0) { agent.resume(session.messages); return true; }
@@ -502,15 +656,6 @@ function tryResume(root, agent, id) {
 
 function saveSession(root, agent, memory) {
   try { memory.learnFromMessages(agent.exportContext()); } catch {}
-}
-
-function updateStatus(agent, memory, mode, model, thinking) {
-  console.log(renderer.renderDivider());
-  const u = agent?.getUsage();
-  console.log(renderer.renderStatusBar({
-    mode, model, thinking,
-    tokens: u?.totalTokens, cost: u?.cost,
-  }));
 }
 
 function listMemoriesCli(memory) {
