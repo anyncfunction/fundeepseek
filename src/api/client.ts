@@ -286,25 +286,38 @@ export class DeepSeekClient extends EventEmitter {
                 if (parsed.choices?.[0]) {
                   const choice = parsed.choices[0];
                   const msg = finalResponse!.choices[0].message;
-                  if (choice.delta.content) msg.content = (msg.content || '') + choice.delta.content;
+
+                  // Accumulate text content
+                  if (choice.delta.content) {
+                    msg.content = (msg.content || '') + choice.delta.content;
+                  }
+
+                  // Accumulate reasoning/thinking content
                   if (choice.delta.reasoning_content) {
                     msg.reasoning_content = (msg.reasoning_content || '') + choice.delta.reasoning_content;
                   }
+
+                  // Properly reconstruct tool_calls from streaming deltas
                   if (choice.delta.tool_calls) {
                     if (!msg.tool_calls) msg.tool_calls = [];
                     for (const tc of choice.delta.tool_calls) {
-                      if (tc.id) {
-                        msg.tool_calls[tc.index] = {
-                          id: tc.id,
+                      const idx = tc.index;
+                      // Ensure entry exists
+                      if (!msg.tool_calls[idx]) {
+                        msg.tool_calls[idx] = {
+                          id: '',
                           type: 'function',
-                          function: { name: tc.function?.name || '', arguments: '' },
+                          function: { name: '', arguments: '' },
                         };
                       }
-                      if (tc.function?.arguments && msg.tool_calls[tc.index]) {
-                        msg.tool_calls[tc.index].function.arguments += tc.function.arguments;
-                      }
+                      // Merge delta fields
+                      if (tc.id) msg.tool_calls[idx].id = tc.id;
+                      if (tc.type) msg.tool_calls[idx].type = tc.type;
+                      if (tc.function?.name) msg.tool_calls[idx].function.name += tc.function.name;
+                      if (tc.function?.arguments) msg.tool_calls[idx].function.arguments += tc.function.arguments;
                     }
                   }
+
                   if (choice.finish_reason) {
                     finalResponse!.choices[0].finish_reason = choice.finish_reason as any;
                   }

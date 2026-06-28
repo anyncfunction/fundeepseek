@@ -173,27 +173,45 @@ export class Agent extends EventEmitter {
           this.trackCost(response.usage.prompt_tokens, response.usage.completion_tokens);
         }
 
-        // Handle tool calls
-        if (choice.finish_reason === 'tool_calls' && assistantMsg.tool_calls?.length) {
-          // Add assistant message with tool calls to context
+        // Check for tool calls — check the message itself, not just finish_reason
+        // (DeepSeek may return tool_calls with finish_reason: 'stop' in some cases)
+        const hasToolCalls = assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0;
+
+        if (hasToolCalls) {
+          // Add assistant message to context (preserving reasoning_content for tool chain)
           this.context.addAssistant(
             assistantMsg.content,
             assistantMsg.tool_calls,
             assistantMsg.reasoning_content
           );
 
-          // Execute each tool call
-          for (const toolCall of assistantMsg.tool_calls) {
+          // Execute each tool call sequentially
+          for (const toolCall of assistantMsg.tool_calls!) {
+            // Validate tool call
+            if (!toolCall.id || !toolCall.function?.name) {
+              this.context.addToolResult(
+                toolCall.id || 'unknown',
+                toolCall.function?.name || 'unknown',
+                'Error: Invalid tool call — missing id or name'
+              );
+              continue;
+            }
+
             const result = await this.executeTool(toolCall);
             this.context.addToolResult(toolCall.id, toolCall.function.name, result);
           }
 
-          // Continue the loop
+          // Emit response event so UI can update (thinking box etc.)
+          this.emit('response', '');
+
+          // Continue loop — model will process tool results
           continue;
         }
 
         // Final response — no tool calls
         const finalContent = assistantMsg.content || '(no response)';
+
+        // Add final assistant message (reasoning_content stripped for non-tool turns)
         this.context.addAssistant(finalContent, undefined, assistantMsg.reasoning_content);
 
         // Emit final response for display
@@ -204,15 +222,14 @@ export class Agent extends EventEmitter {
       } catch (err: any) {
         // Handle errors
         if (err.status === 429) {
-          // Rate limited — wait and retry
           this.emit('warning', 'Rate limited by DeepSeek API. Waiting 5 seconds...');
           await this.sleep(5000);
-          this.currentRound--; // Don't count this round
+          this.currentRound--;
           continue;
         }
 
         if (err.status === 401 || err.status === 403) {
-          return `Authentication error: Invalid or expired API key. Please check your DEEPSEEK_API_KEY.`;
+          return 'Authentication error: Invalid or expired API key. Please check your DEEPSEEK_API_KEY.';
         }
 
         if (err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT') {
@@ -222,7 +239,13 @@ export class Agent extends EventEmitter {
             this.currentRound--;
             continue;
           }
-          return `Connection to DeepSeek API failed after multiple retries. Check your network.`;
+          return 'Connection to DeepSeek API failed after multiple retries. Check your network.';
+        }
+
+        // If it's an API error with a body, log more details
+        if (err.body) {
+          this.emit('error', err);
+          return `API Error: ${err.body?.error?.message || err.message}`;
         }
 
         this.emit('error', err);
