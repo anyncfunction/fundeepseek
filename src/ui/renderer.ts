@@ -1,189 +1,258 @@
 // ============================================================
-// Terminal UI Renderer — rich visual output
-// Handles: banners, thinking boxes, code blocks,
-// tool progress, markdown, status bars
+// Terminal UI Renderer — Claude Code style layout
+// ╭─ header ───╮  ╭─ left pane ──╮ ╭─ right pane ──╮  ╰─ footer ─╯
+// ═══════════════  > prompt       ═══════════════════  ◈ status bar
 // ============================================================
 import chalk from 'chalk';
 
-// ANSI control sequences
 const CSI = '\x1b[';
-const HIDE_CURSOR = CSI + '?25l';
-const SHOW_CURSOR = CSI + '?25h';
-const CLEAR_LINE = CSI + '2K';
-const CURSOR_UP = (n: number) => CSI + n + 'A';
-const SAVE_CURSOR = CSI + 's';
-const RESTORE_CURSOR = CSI + 'u';
 
-// Terminal dimensions
-function termWidth(): number {
-  return process.stdout.columns || 80;
+// ═══════════════════════════════════════════════════════════
+// SECTION: Terminal Helpers
+// ═══════════════════════════════════════════════════════════
+
+function termWidth(): number { return process.stdout.columns || 80; }
+function termHeight(): number { return process.stdout.rows || 24; }
+
+function strip(s: string): number {
+  return s.replace(/\x1b\[[0-9;]*m/g, '').length;
 }
 
-function termHeight(): number {
-  return process.stdout.rows || 24;
+function padRight(s: string, w: number): string {
+  return s + ' '.repeat(Math.max(0, w - strip(s)));
+}
+
+function padLeft(s: string, w: number): string {
+  return ' '.repeat(Math.max(0, w - strip(s))) + s;
+}
+
+function center(s: string, w: number): string {
+  const sw = strip(s);
+  const left = Math.floor((w - sw) / 2);
+  return ' '.repeat(Math.max(0, left)) + s + ' '.repeat(Math.max(0, w - sw - left));
 }
 
 // ═══════════════════════════════════════════════════════════
-// SECTION: Banner
+// SECTION: ASCII Art Logo
+// ═══════════════════════════════════════════════════════════
+
+const LOGO_FISH = [
+  '       ▄████████▄        ',
+  '      ██▀└────└▀██       ',
+  '     █▀          ▀█      ',
+  '    █▌   ▐▌  ▐▌   ▐█     ',
+  '    ██▄▄████████▄▄██     ',
+  '     ▀█▀▀▀▀▀▀▀▀▀█▀      ',
+];
+
+const LOGO_DS = [
+  '      🐋  DeepSeek       ',
+  '   ═══════════════════   ',
+  '   深海 · 探索 · 编程     ',
+];
+
+// ═══════════════════════════════════════════════════════════
+// SECTION: Banner — ╭─── title ───╮ style header
 // ═══════════════════════════════════════════════════════════
 
 export function renderBanner(options: {
-  model: string;
-  mode: string;
-  thinking: string;
-  projectRoot: string;
-  version?: string;
+  title: string;
+  subtitle?: string;
+  width?: number;
 }): string {
-  const w = Math.min(termWidth(), 90);
-  const boxTop = '╔' + '═'.repeat(w - 2) + '╗';
-  const boxBot = '╚' + '═'.repeat(w - 2) + '╝';
-  const pad = (s: string, width: number) => {
-    const visible = s.replace(/\x1b\[[0-9;]*m/g, '');
-    return s + ' '.repeat(Math.max(0, width - visible.length));
-  };
+  const w = options.width || termWidth();
+  const title = ` FundeePseek v1.0.0 `;
+  const dash = '─'.repeat(Math.max(0, w - strip(title) - 2));
+  return chalk.cyan('╭' + title + dash + '╮');
+}
 
-  const version = options.version || '1.0.0';
-  const titleLine = centerText(`FundeePseek v${version}`, w - 2, 'bold', 'cyan');
-
-  // Model/Mode/Thinking status line
-  const statusParts = [
-    chalk.blue('●') + ' ' + chalk.white(options.model),
-    chalk.green('◆') + ' ' + chalk.white(options.mode + ' mode'),
-    chalk.yellow('◈') + ' ' + chalk.white('thinking: ' + options.thinking),
-  ];
-  const statusLine = centerText(statusParts.join('  │  '), w - 2);
-
-  // Project line
-  const projectLine = chalk.gray('  📁 ' + truncatePath(options.projectRoot, w - 10));
-
-  return [
-    chalk.cyan(boxTop),
-    chalk.cyan('║') + chalk.bold.cyan(titleLine) + chalk.cyan('║'),
-    chalk.cyan('║') + statusLine + chalk.cyan('║'),
-    chalk.cyan(boxBot),
-    projectLine,
-    '',
-  ].join('\n');
+export function renderFooter(): string {
+  const w = termWidth();
+  return chalk.cyan('╰' + '─'.repeat(w - 2) + '╯');
 }
 
 // ═══════════════════════════════════════════════════════════
-// SECTION: Thinking / Reasoning Display
+// SECTION: Welcome Screen — Two-column layout
+// ═══════════════════════════════════════════════════════════
+
+export function renderWelcome(options: {
+  model: string;
+  mode: string;
+  projectRoot: string;
+  hasKey: boolean;
+}): string {
+  const w = termWidth() - 2; // inside borders
+  const leftW = Math.floor(w * 0.42);
+  const rightW = w - leftW;
+  const h = 12; // content height
+
+  const lines: string[] = [];
+
+  // Top border
+  const titlePart = ' FundeePseek v1.0.0 ';
+  const dash = '─'.repeat(Math.max(0, w - strip(titlePart)));
+  lines.push(chalk.cyan('╭' + titlePart + dash + '╮'));
+
+  for (let row = 0; row < h; row++) {
+    const left = leftPane(row, leftW, options);
+    const right = rightPane(row, rightW, options);
+    lines.push(chalk.cyan('│') + left + right + chalk.cyan('│'));
+  }
+
+  // Bottom border
+  lines.push(chalk.cyan('╰' + '─'.repeat(w) + '╯'));
+
+  return lines.join('\n');
+}
+
+function leftPane(row: number, w: number, opts: { model: string; mode: string; projectRoot: string }): string {
+  switch (row) {
+    case 0: return center(chalk.white.bold('FundeePseek'), w);
+    case 1: return center(chalk.cyan('🐋  DeepSeek CLI Coding Agent'), w);
+    case 2: return center('', w);
+    case 3: return center(LOGO_DS[0], w);
+    case 4: return center(LOGO_DS[1], w);
+    case 5: return center(LOGO_DS[2], w);
+    case 6: return center('', w);
+    case 7: return padRight('  ' + chalk.blue('●') + ' ' + chalk.white(opts.model), w);
+    case 8: return padRight('  ' + chalk.green('◆') + ' ' + chalk.white(opts.mode + ' mode'), w);
+    case 9: return padRight('  ' + chalk.gray('📁 ') + chalk.gray(opts.projectRoot.length > w - 6
+      ? '...' + opts.projectRoot.slice(-(w - 12))
+      : opts.projectRoot), w);
+    case 10: return padRight('  ' + chalk.gray('API Usage Billing'), w);
+    case 11: return center(chalk.dim('v1.0.0 · Apache-2.0'), w);
+    default: return padRight('', w);
+  }
+}
+
+function rightPane(row: number, w: number, opts: { hasKey: boolean }): string {
+  if (opts.hasKey) {
+    // Logged-in tips
+    switch (row) {
+      case 0: return padRight(chalk.bold.white('Tips for getting started'), w);
+      case 1: return padRight(chalk.gray('Type anything to start coding'), w);
+      case 2: return padRight(chalk.gray('/help for all commands'), w);
+      case 3: return padRight(chalk.gray('/model to switch models'), w);
+      case 4: return padRight(chalk.gray('─'.repeat(Math.min(w - 2, 30))), w);
+      case 5: return padRight(chalk.bold.white("What's new"), w);
+      case 6: return padRight(chalk.gray('4 models: V3 · R1 · V4-Pro · V4-Flash'), w);
+      case 7: return padRight(chalk.gray('Thinking mode for deep reasoning'), w);
+      case 8: return padRight(chalk.gray('Global memory & user profiling'), w);
+      case 9: return padRight(chalk.gray('8 tools for full autonomy'), w);
+      case 10: return padRight(chalk.gray('/release-notes for more'), w);
+      default: return padRight('', w);
+    }
+  } else {
+    // First-time setup
+    switch (row) {
+      case 0: return padRight(chalk.bold.yellow('🔑 First Time Setup'), w);
+      case 1: return padRight('', w);
+      case 2: return padRight(chalk.white.bold('  Type this to start:'), w);
+      case 3: return padRight('', w);
+      case 4: return padRight(chalk.cyan.bold('  /auth sk-your-api-key'), w);
+      case 5: return padRight('', w);
+      case 6: return padRight(chalk.gray('─'.repeat(Math.min(w - 2, 30))), w);
+      case 7: return padRight(chalk.gray('Get your key:'), w);
+      case 8: return padRight(chalk.dim('platform.deepseek.com/api_keys'), w);
+      case 9: return padRight('', w);
+      case 10: return padRight(chalk.gray('Key saved to ~/.fundeepseek/'), w);
+      default: return padRight('', w);
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// SECTION: Divider
+// ═══════════════════════════════════════════════════════════
+
+export function renderDivider(): string {
+  return chalk.gray('─'.repeat(termWidth()));
+}
+
+// ═══════════════════════════════════════════════════════════
+// SECTION: Status Bar — bottom line with shortcuts
+// ═══════════════════════════════════════════════════════════
+
+export function renderStatusBar(opts: {
+  mode: string;
+  model: string;
+  thinking: string;
+  tokens?: number;
+  cost?: number;
+}): string {
+  const w = termWidth();
+  const left = chalk.gray('  /help for commands · /auto /plan /ask /chat');
+  let right = '';
+
+  if (opts.tokens && opts.tokens > 0) {
+    right += chalk.gray(formatTokens(opts.tokens) + ' tok · ');
+  }
+  if (opts.cost && opts.cost > 0) {
+    right += chalk.gray('$' + opts.cost.toFixed(4) + ' · ');
+  }
+  right += chalk.white('◈ ') + chalk.white(opts.mode);
+  right += chalk.gray(' · ') + chalk.gray('/' + opts.model);
+
+  const spacer = Math.max(1, w - strip(left) - strip(right));
+  return left + ' '.repeat(spacer) + right;
+}
+
+// ═══════════════════════════════════════════════════════════
+// SECTION: Prompt
+// ═══════════════════════════════════════════════════════════
+
+export function getPrompt(): string {
+  return chalk.bold.white('> ');
+}
+
+// ═══════════════════════════════════════════════════════════
+// SECTION: Thinking Display
 // ═══════════════════════════════════════════════════════════
 
 let thinkingActive = false;
-let thinkingBuffer = '';
+let thinkingLines: string[] = [];
 
 export function startThinking(): void {
   thinkingActive = true;
-  thinkingBuffer = '';
-  process.stdout.write('\n' + chalk.yellow.bold('🤔 Deep Thinking') + chalk.gray(' ─'.repeat(40)) + '\n');
+  thinkingLines = [];
+  process.stdout.write(chalk.yellow.bold('\n  🤔 Thinking') + chalk.gray(' ·'.repeat(10)) + '\n');
 }
 
 export function appendThinking(text: string): void {
-  if (!thinkingActive) {
-    startThinking();
+  if (!thinkingActive) startThinking();
+  // Show just recent line
+  thinkingLines.push(text);
+  const recent = thinkingLines[thinkingLines.length - 1];
+  if (recent) {
+    process.stdout.write(chalk.yellow.dim('  ' + recent.slice(0, termWidth() - 4)) + '\n');
   }
-  thinkingBuffer += text;
-  // Display last few lines of thinking
-  const lines = thinkingBuffer.split('\n');
-  const recent = lines.slice(-3).join('\n');
-  process.stdout.write(CURSOR_UP(1) + CLEAR_LINE + '\r');
-  process.stdout.write(chalk.yellow.dim(recent) + '\n');
 }
 
-export function endThinking(): string {
-  if (!thinkingActive) return thinkingBuffer;
+export function endThinking(): void {
+  if (!thinkingActive) return;
   thinkingActive = false;
-  process.stdout.write(chalk.gray('─'.repeat(55)) + '\n\n');
-  const result = thinkingBuffer;
-  thinkingBuffer = '';
-  return result;
+  process.stdout.write(chalk.gray('  ' + '─'.repeat(Math.min(termWidth() - 4, 50))) + '\n\n');
 }
 
-// ═══════════════════════════════════════════════════════════
-// SECTION: Streaming Response
-// ═══════════════════════════════════════════════════════════
+export function isThinking(): boolean { return thinkingActive; }
 
-let streamLineBuffer = '';
-let streamLineLength = 0;
+// ═══════════════════════════════════════════════════════════
+// SECTION: Streaming Output
+// ═══════════════════════════════════════════════════════════
 
 export function writeStream(text: string): void {
-  // Close thinking if active
-  if (thinkingActive) {
-    endThinking();
-  }
-
-  for (const char of text) {
-    if (char === '\n') {
-      process.stdout.write('\n');
-      streamLineBuffer = '';
-      streamLineLength = 0;
-    } else {
-      process.stdout.write(char);
-      streamLineBuffer += char;
-      streamLineLength++;
-    }
-  }
+  if (thinkingActive) endThinking();
+  process.stdout.write(text);
 }
 
 // ═══════════════════════════════════════════════════════════
 // SECTION: Markdown Rendering
 // ═══════════════════════════════════════════════════════════
 
-export function renderMarkdown(md: string): string {
-  // Simple but effective terminal markdown renderer
-  const w = termWidth();
-  let result = md;
-
-  // Code blocks with border
-  result = result.replace(
-    /```(\w*)\n([\s\S]*?)```/g,
-    (_, lang, code) => {
-      const lines = code.trimEnd().split('\n');
-      const border = chalk.gray('┌' + '─'.repeat(Math.min(w - 4, 60)) + '┐');
-      const langTag = lang ? chalk.cyan(` ${lang} `) : '';
-      const rendered = lines
-        .map((l: string, i: number) => {
-          const num = chalk.gray(String(i + 1).padStart(3, ' ') + ' │ ');
-          return num + l;
-        })
-        .join('\n');
-      return '\n' + border + '\n' + langTag + '\n' + rendered + '\n' + chalk.gray('└' + '─'.repeat(Math.min(w - 4, 60)) + '┘') + '\n';
-    }
-  );
-
-  // Inline code
-  result = result.replace(/`([^`\n]+?)`/g, (_, code) => chalk.cyan.bgBlack(' ' + code + ' '));
-
-  // Bold
-  result = result.replace(/\*\*(.+?)\*\*/g, (_, text) => chalk.bold.white(text));
-
-  // Italic
-  result = result.replace(/\*(.+?)\*/g, (_, text) => chalk.italic.gray(text));
-
-  // Headers
-  result = result.replace(/^### (.+)$/gm, (_, text) => chalk.bold.underline('\n' + text));
-  result = result.replace(/^## (.+)$/gm, (_, text) => chalk.bold.yellow('\n' + text));
-  result = result.replace(/^# (.+)$/gm, (_, text) => chalk.bold.cyan('\n' + text));
-
-  // Blockquotes
-  result = result.replace(/^> (.+)$/gm, (_, text) => chalk.gray('  │ ') + chalk.italic.dim(text));
-
-  // Horizontal rules
-  result = result.replace(/^---$/gm, chalk.gray('─'.repeat(Math.min(w - 4, 60))));
-
-  // Lists
-  result = result.replace(/^[*-] (.+)$/gm, (_, text) => chalk.white('  • ') + text);
-
-  return result;
-}
-
 export function printMarkdown(md: string): void {
-  // Try to use the marked-terminal renderer if available
   try {
     const { marked } = require('marked');
     const { TerminalRenderer } = require('marked-terminal');
-
     marked.setOptions({
       renderer: new TerminalRenderer({
         code: chalk.gray,
@@ -192,265 +261,162 @@ export function printMarkdown(md: string): void {
         firstHeading: chalk.bold.cyan,
         hr: chalk.gray,
         listitem: chalk.white,
-        table: chalk.gray,
         paragraph: chalk.white,
         strong: chalk.bold,
         em: chalk.italic,
       }),
     });
-
     process.stdout.write(marked.parse(md));
   } catch {
-    // Fallback to our simple renderer
-    process.stdout.write(renderMarkdown(md));
+    process.stdout.write(renderMarkdownSimple(md));
   }
 }
 
+function renderMarkdownSimple(md: string): string {
+  let r = md;
+  r = r.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    const lines = code.trimEnd().split('\n');
+    const numbered = lines.map((l: string, i: number) =>
+      chalk.gray(String(i + 1).padStart(3) + ' │ ') + l
+    ).join('\n');
+    return '\n' + chalk.gray('┌── ' + (lang || 'code') + ' ──┐\n') + numbered + '\n' + chalk.gray('└' + '-'.repeat(40) + '┘\n');
+  });
+  r = r.replace(/`([^`\n]+?)`/g, (_, c) => chalk.cyan(c));
+  r = r.replace(/\*\*(.+?)\*\*/g, (_, t) => chalk.bold(t));
+  r = r.replace(/^### (.+)$/gm, (_, t) => chalk.bold.underline('\n' + t));
+  r = r.replace(/^## (.+)$/gm, (_, t) => chalk.bold.yellow('\n' + t));
+  r = r.replace(/^# (.+)$/gm, (_, t) => chalk.bold.cyan('\n' + t));
+  r = r.replace(/^[*-] (.+)$/gm, (_, t) => '  • ' + t);
+  return r;
+}
+
 // ═══════════════════════════════════════════════════════════
-// SECTION: Tool Progress Display
+// SECTION: Tool Progress
 // ═══════════════════════════════════════════════════════════
 
 const TOOL_ICONS: Record<string, string> = {
-  read_file: '📖',
-  write_file: '✏️',
-  edit_file: '🔧',
-  bash: '⚡',
-  grep: '🔍',
-  glob: '📂',
-  git: '🔀',
-  web: '🌐',
+  read_file: '📖', write_file: '✏️', edit_file: '🔧', bash: '⚡',
+  grep: '🔍', glob: '📂', git: '🔀', web: '🌐',
 };
 
-let currentToolSpinner: ReturnType<typeof setInterval> | null = null;
-const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-let spinnerIdx = 0;
+let toolSpinner: ReturnType<typeof setInterval> | null = null;
+const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+let spinIdx = 0;
 
-export function startToolProgress(toolName: string, args: string): void {
-  stopToolProgress();
-  spinnerIdx = 0;
+export function startTool(name: string, args: string): void {
+  stopTool();
+  if (thinkingActive) endThinking();
+  spinIdx = 0;
+  const icon = TOOL_ICONS[name] || '🔨';
+  const preview = toolPreview(name, args);
 
-  const icon = TOOL_ICONS[toolName] || '🔨';
-  const shortArgs = truncateText(tryParseArgsPreview(toolName, args), termWidth() - 20);
-
-  const line = () => {
-    const frame = chalk.cyan(spinnerFrames[spinnerIdx % spinnerFrames.length]);
-    return `  ${frame} ${icon} ${chalk.white(toolName)} ${chalk.gray.dim(shortArgs)}`;
+  const draw = () => {
+    process.stdout.write('\r' + CSI + '2K' + '\r');
+    process.stdout.write(chalk.cyan(`  ${frames[spinIdx % frames.length]} `) + icon + ' ' + chalk.white(name) + ' ' + chalk.gray(preview));
   };
-
-  process.stdout.write(line());
-
-  currentToolSpinner = setInterval(() => {
-    spinnerIdx++;
-    process.stdout.write('\r' + CLEAR_LINE + '\r' + line());
-  }, 80);
+  draw();
+  toolSpinner = setInterval(() => { spinIdx++; draw(); }, 80);
 }
 
-export function finishToolProgress(toolName: string, success: boolean, detail?: string): void {
-  stopToolProgress();
-  const icon = TOOL_ICONS[toolName] || '🔨';
-  const status = success ? chalk.green('✓') : chalk.red('✗');
-  const info = detail ? chalk.gray(' (' + detail + ')') : '';
-  process.stdout.write('\r' + CLEAR_LINE + '\r');
-  process.stdout.write(`  ${icon} ${chalk.white(toolName)} ${status}${info}\n`);
+export function finishTool(name: string, ok: boolean, detail?: string): void {
+  stopTool();
+  const icon = TOOL_ICONS[name] || '🔨';
+  const status = ok ? chalk.green('✓') : chalk.red('✗');
+  const extra = detail ? chalk.gray(' · ' + detail) : '';
+  process.stdout.write('\r' + CSI + '2K' + '\r');
+  process.stdout.write(`  ${icon} ${chalk.white(name)} ${status}${extra}\n`);
 }
 
-export function stopToolProgress(): void {
-  if (currentToolSpinner) {
-    clearInterval(currentToolSpinner);
-    currentToolSpinner = null;
-  }
+export function stopTool(): void {
+  if (toolSpinner) { clearInterval(toolSpinner); toolSpinner = null; }
+}
+
+function toolPreview(name: string, args: string): string {
+  try {
+    const p = JSON.parse(args);
+    switch (name) {
+      case 'read_file': case 'write_file': case 'edit_file':
+        return (p.file_path || '').replace(/\\/g, '/').split('/').pop() || '';
+      case 'bash': return p.description || (p.command || '').slice(0, 30);
+      case 'grep': return '"' + (p.pattern || '').slice(0, 25) + '"';
+      case 'glob': return p.pattern || '';
+      case 'git': return p.operation || '';
+      case 'web': return p.action + (p.query ? ': ' + p.query.slice(0, 20) : '');
+      default: return '';
+    }
+  } catch { return args.slice(0, 30); }
 }
 
 // ═══════════════════════════════════════════════════════════
-// SECTION: Status Bar
+// SECTION: Messages
 // ═══════════════════════════════════════════════════════════
 
-export function renderStatusBar(stats: {
-  messages: number;
-  tokens: number;
-  maxTokens: number;
-  cost: number;
-  mode: string;
-  model: string;
+export function info(msg: string): void {
+  process.stdout.write(chalk.blue('  ℹ ') + msg + '\n');
+}
+
+export function success(msg: string): void {
+  process.stdout.write(chalk.green('  ✓ ') + msg + '\n');
+}
+
+export function warn(msg: string): void {
+  process.stdout.write(chalk.yellow('  ⚠ ') + msg + '\n');
+}
+
+export function error(msg: string): void {
+  process.stdout.write(chalk.red('  ✗ ') + msg + '\n');
+}
+
+// ═══════════════════════════════════════════════════════════
+// SECTION: Session Summary Box
+// ═══════════════════════════════════════════════════════════
+
+export function renderSessionSummary(stats: {
+  model: string; mode: string; messages: number;
+  promptTokens: number; completionTokens: number;
+  reasoningTokens: number; cost: number; rounds: number;
+  duration: number;
 }): string {
-  const w = termWidth();
-  const percent = Math.round((stats.tokens / stats.maxTokens) * 100);
-  const barLen = 20;
-  const filled = Math.round((percent / 100) * barLen);
-  const bar = chalk.green('█'.repeat(Math.min(filled, barLen))) + chalk.gray('░'.repeat(Math.max(0, barLen - filled)));
+  const w = 42;
+  const l = (label: string, value: string) =>
+    chalk.cyan('│ ') + chalk.gray(label.padEnd(14)) + chalk.white(value) + ' '.repeat(Math.max(0, w - 17 - strip(value))) + chalk.cyan('│');
 
-  const left = [
-    chalk.cyan('●') + ' ' + chalk.white(stats.model),
-    chalk.magenta('◆') + ' ' + chalk.white(stats.mode),
-  ].join('  ');
-
-  const center = `${chalk.white(stats.messages + ' msgs')}  ${bar}  ${chalk.white(percent + '%')}  ${chalk.yellow('$' + stats.cost.toFixed(4))}`;
-
-  const right = chalk.gray(`ctx: ${formatTokenCount(stats.tokens)}/${formatTokenCount(stats.maxTokens)}`);
-
-  const spacer = Math.max(2, w - stripAnsi(left).length - stripAnsi(center).length - stripAnsi(right).length);
-  return '\n' + chalk.bgBlack.white(left + ' '.repeat(spacer / 2) + center + ' '.repeat(spacer / 2) + right) + '\n';
+  return [
+    '',
+    chalk.cyan('┌' + '─'.repeat(w) + '┐'),
+    chalk.cyan('│') + center(chalk.bold(' Session Summary '), w) + chalk.cyan('│'),
+    chalk.cyan('│') + ' '.repeat(w) + chalk.cyan('│'),
+    l('Model', stats.model),
+    l('Mode', stats.mode),
+    l('Messages', String(stats.messages)),
+    l('Prompt', formatTokens(stats.promptTokens)),
+    l('Completion', formatTokens(stats.completionTokens)),
+    l('Reasoning', formatTokens(stats.reasoningTokens)),
+    l('Rounds', String(stats.rounds)),
+    l('Cost', chalk.yellow('$' + stats.cost.toFixed(4))),
+    l('Duration', formatDuration(stats.duration)),
+    chalk.cyan('└' + '─'.repeat(w) + '┘'),
+    '',
+  ].join('\n');
 }
 
 // ═══════════════════════════════════════════════════════════
-// SECTION: Prompt
+// SECTION: Misc
 // ═══════════════════════════════════════════════════════════
 
-export function getPrompt(mode: string): string {
-  const icons: Record<string, string> = {
-    auto: '🚀',
-    plan: '📋',
-    ask: '💬',
-    chat: '🗨️',
-  };
-  const icon = icons[mode] || '>';
+export function hideCursor(): void { process.stdout.write(CSI + '?25l'); }
+export function showCursor(): void { process.stdout.write(CSI + '?25h'); }
+export function clearScreen(): void { process.stdout.write(CSI + '2J' + CSI + 'H'); }
+export function blank(): void { process.stdout.write('\n'); }
 
-  // Multi-color gradient prompt
-  return chalk.bold.cyan(icon + ' funds') + chalk.cyan(' › ');
-}
-
-// ═══════════════════════════════════════════════════════════
-// SECTION: Utility
-// ═══════════════════════════════════════════════════════════
-
-function centerText(text: string, width: number, style?: string, color?: string): string {
-  const visible = text.replace(/\x1b\[[0-9;]*m/g, '');
-  const pad = Math.max(0, width - visible.length);
-  const left = Math.floor(pad / 2);
-  const right = pad - left;
-  return ' '.repeat(left) + text + ' '.repeat(right);
-}
-
-function truncatePath(p: string, maxLen: number): string {
-  if (p.length <= maxLen) return p;
-  const parts = p.replace(/\\/g, '/').split('/');
-  if (parts.length <= 2) return '...' + p.substring(p.length - maxLen + 3);
-  return parts[0] + '/.../' + parts[parts.length - 1];
-}
-
-function truncateText(text: string, maxLen: number): string {
-  if (text.length <= maxLen) return text;
-  return text.substring(0, maxLen - 3) + '...';
-}
-
-function formatTokenCount(n: number): string {
+function formatTokens(n: number): string {
   if (n < 1000) return String(n);
   if (n < 1000000) return (n / 1000).toFixed(1) + 'K';
   return (n / 1000000).toFixed(1) + 'M';
 }
 
-function stripAnsi(s: string): string {
-  return s.replace(/\x1b\[[0-9;]*m/g, '');
-}
-
-function tryParseArgsPreview(toolName: string, args: string): string {
-  try {
-    const parsed = JSON.parse(args);
-    switch (toolName) {
-      case 'read_file':
-        return truncatePath(parsed.file_path || '', 40);
-      case 'write_file':
-        return truncatePath(parsed.file_path || '', 40);
-      case 'edit_file':
-        return truncatePath(parsed.file_path || '', 40);
-      case 'bash':
-        return parsed.description || truncateText(parsed.command || '', 40);
-      case 'grep':
-        return `"${truncateText(parsed.pattern || '', 30)}"`;
-      case 'glob':
-        return parsed.pattern || '';
-      case 'git':
-        return parsed.operation || '';
-      case 'web':
-        return parsed.action + (parsed.query ? ': ' + truncateText(parsed.query, 30) : '');
-      default:
-        return '';
-    }
-  } catch {
-    return truncateText(args, 40);
-  }
-}
-
-// ═══════════════════════════════════════════════════════════
-// SECTION: Messages & Notifications
-// ═══════════════════════════════════════════════════════════
-
-export function printInfo(msg: string): void {
-  process.stdout.write(chalk.blue('  ℹ ') + chalk.white(msg) + '\n');
-}
-
-export function printSuccess(msg: string): void {
-  process.stdout.write(chalk.green('  ✓ ') + chalk.white(msg) + '\n');
-}
-
-export function printWarning(msg: string): void {
-  process.stdout.write(chalk.yellow('  ⚠ ') + chalk.white(msg) + '\n');
-}
-
-export function printError(msg: string): void {
-  process.stdout.write(chalk.red('  ✗ ') + chalk.white(msg) + '\n');
-}
-
-export function printDivider(char: string = '─'): void {
-  const w = termWidth();
-  process.stdout.write(chalk.gray(char.repeat(Math.min(w, 80))) + '\n');
-}
-
-export function printBlank(): void {
-  process.stdout.write('\n');
-}
-
-export function hideCursor(): void {
-  process.stdout.write(HIDE_CURSOR);
-}
-
-export function showCursor(): void {
-  process.stdout.write(SHOW_CURSOR);
-}
-
-export function clearScreen(): void {
-  process.stdout.write(CSI + '2J' + CSI + 'H');
-}
-
-// ═══════════════════════════════════════════════════════════
-// SECTION: Session Summary
-// ═══════════════════════════════════════════════════════════
-
-export function renderSessionSummary(stats: {
-  model: string;
-  mode: string;
-  messages: number;
-  promptTokens: number;
-  completionTokens: number;
-  reasoningTokens: number;
-  cost: number;
-  rounds: number;
-  duration: number;
-}): string {
-  const lines = [
-    '',
-    chalk.gray('┌' + '─'.repeat(40) + '┐'),
-    chalk.gray('│') + chalk.bold('  📊 Session Summary') + ' '.repeat(19) + chalk.gray('│'),
-    chalk.gray('│') + ' '.repeat(40) + chalk.gray('│'),
-    chalk.gray('│') + `  Model:      ${chalk.white(stats.model)}` + ' '.repeat(Math.max(0, 22 - stats.model.length)) + chalk.gray('│'),
-    chalk.gray('│') + `  Mode:       ${chalk.white(stats.mode)}` + ' '.repeat(Math.max(0, 22 - stats.mode.length)) + chalk.gray('│'),
-    chalk.gray('│') + `  Messages:   ${chalk.white(String(stats.messages))}` + ' '.repeat(Math.max(0, 22 - String(stats.messages).length)) + chalk.gray('│'),
-    chalk.gray('│') + `  Prompt:     ${chalk.white(formatTokenCount(stats.promptTokens))}` + ' '.repeat(Math.max(0, 22 - formatTokenCount(stats.promptTokens).length)) + chalk.gray('│'),
-    chalk.gray('│') + `  Completion: ${chalk.white(formatTokenCount(stats.completionTokens))}` + ' '.repeat(Math.max(0, 22 - formatTokenCount(stats.completionTokens).length)) + chalk.gray('│'),
-    chalk.gray('│') + `  Reasoning:  ${chalk.white(formatTokenCount(stats.reasoningTokens))}` + ' '.repeat(Math.max(0, 22 - formatTokenCount(stats.reasoningTokens).length)) + chalk.gray('│'),
-    chalk.gray('│') + `  Rounds:     ${chalk.white(String(stats.rounds))}` + ' '.repeat(Math.max(0, 22 - String(stats.rounds).length)) + chalk.gray('│'),
-    chalk.gray('│') + `  Cost:       ${chalk.yellow('$' + stats.cost.toFixed(4))}` + ' '.repeat(Math.max(0, 22 - ('$' + stats.cost.toFixed(4)).length)) + chalk.gray('│'),
-    chalk.gray('│') + `  Duration:   ${chalk.white(formatDuration(stats.duration))}` + ' '.repeat(Math.max(0, 22 - formatDuration(stats.duration).length)) + chalk.gray('│'),
-    chalk.gray('└' + '─'.repeat(40) + '┘'),
-    '',
-  ];
-  return lines.join('\n');
-}
-
 function formatDuration(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60) return seconds + 's';
-  const minutes = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return minutes + 'm ' + secs + 's';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + 's';
+  return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
 }

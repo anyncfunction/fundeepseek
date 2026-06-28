@@ -1,38 +1,67 @@
 #!/usr/bin/env node
 // ============================================================
-// FundeePseek CLI — Rich Interactive Terminal UI
+// FundeePseek CLI — Claude Code style interactive terminal
+// ╭─ header ─╮  two-column welcome  ╰─ footer ─╯
+// ═══════════  > prompt  ═══════════  ◈ status bar
 // ============================================================
-const { Command } = require('commander');
 const chalk = require('chalk');
 const path = require('path');
 const fs = require('fs');
 const readline = require('readline');
 
-// Dynamically loaded after build
-let Agent, GlobalMemory, loadConfig, initProject, SessionManager, SessionStorage;
-
+let Agent, GlobalMemory, loadConfig, initProject, SessionStorage;
 let renderer;
 
-const program = new Command();
+// ═══════════════════════════════════════════════════════════
+// Slash commands with descriptions (for autocomplete)
+// ═══════════════════════════════════════════════════════════
+
+const SLASH_COMMANDS = [
+  { cmd: '/auto', desc: 'Switch to full autonomy mode — reads, writes, executes freely' },
+  { cmd: '/plan', desc: 'Switch to plan mode — plan first, execute after approval' },
+  { cmd: '/ask', desc: 'Switch to ask mode — read-only, no modifications' },
+  { cmd: '/chat', desc: 'Switch to chat mode — pure conversation, no tools' },
+  { cmd: '/model', desc: 'Switch model: deepseek-chat, deepseek-reasoner, deepseek-v4-pro, deepseek-v4-flash' },
+  { cmd: '/thinking', desc: 'Toggle thinking mode: on, off, or auto' },
+  { cmd: '/auth', desc: 'Set your DeepSeek API key' },
+  { cmd: '/clear', desc: 'Start a new session with empty context' },
+  { cmd: '/compact', desc: 'Show context window usage statistics' },
+  { cmd: '/usage', desc: 'Show token usage and estimated cost' },
+  { cmd: '/profile', desc: 'Show your learned coding profile' },
+  { cmd: '/remember', desc: 'Save a fact to global memory' },
+  { cmd: '/memories', desc: 'List saved global memories' },
+  { cmd: '/forget', desc: 'Delete a memory by its name' },
+  { cmd: '/resume', desc: 'Resume a previous session' },
+  { cmd: '/sessions', desc: 'List all saved sessions' },
+  { cmd: '/release-notes', desc: 'Show what\'s new in this version' },
+  { cmd: '/help', desc: 'Show all available commands' },
+  { cmd: '/exit', desc: 'Exit FundeePseek and save session' },
+];
+
+// ═══════════════════════════════════════════════════════════
+// Main
+// ═══════════════════════════════════════════════════════════
+
+const program = require('commander').createCommand();
 
 program
   .name('funds')
   .description('FundeePseek — DeepSeek CLI Coding Agent')
   .version('1.0.0')
-  .option('-p, --prompt <text>', 'Single prompt (non-interactive mode)')
-  .option('-m, --model <name>', 'Model: deepseek-chat, deepseek-reasoner, deepseek-v4-pro, deepseek-v4-flash')
+  .option('-p, --prompt <text>', 'Single prompt (non-interactive)')
+  .option('-m, --model <name>', 'Model to use')
   .option('-M, --mode <mode>', 'Mode: auto, plan, ask, chat', 'auto')
   .option('-t, --thinking <mode>', 'Thinking: on, off, auto', 'off')
-  .option('-r, --resume [session-id]', 'Resume a previous session')
-  .option('-n, --new-session', 'Start a new session')
-  .option('--init', 'Initialize FundeePseek in current directory')
+  .option('-r, --resume [id]', 'Resume a session')
+  .option('-n, --new-session', 'Start fresh')
+  .option('--init', 'Initialize in current directory')
   .option('--list-sessions', 'List saved sessions')
-  .option('--export <session-id>', 'Export a session as text')
-  .option('--profile', 'Show your user profile')
+  .option('--export <id>', 'Export session to markdown')
+  .option('--profile', 'Show user profile')
   .option('--memories', 'List global memories')
-  .option('--remember <text>', 'Save a global memory')
-  .option('--forget <slug>', 'Delete a global memory')
-  .option('--no-color', 'Disable colored output')
+  .option('--remember <text>', 'Save a memory')
+  .option('--forget <slug>', 'Delete a memory')
+  .option('--no-color', 'Disable colors')
   .option('--api-key <key>', 'DeepSeek API key')
   .action(main);
 
@@ -40,215 +69,132 @@ async function main(options) {
   // Load compiled modules
   try {
     const mod = require('../dist/index');
-    Agent = mod.Agent;
-    GlobalMemory = mod.GlobalMemory;
-    loadConfig = mod.loadConfig;
-    initProject = mod.initProject;
-    SessionManager = mod.SessionManager;
+    Agent = mod.Agent; GlobalMemory = mod.GlobalMemory;
+    loadConfig = mod.loadConfig; initProject = mod.initProject;
     SessionStorage = mod.SessionStorage;
+    renderer = require('../dist/ui/renderer');
   } catch (e) {
-    console.error(chalk.red('✗ FundeePseek not built. Run "npm run build" first.'));
+    console.error('✗ Not built. Run: npm run build');
     process.exit(1);
   }
 
-  renderer = require('../dist/ui/renderer');
+  // Offline commands
+  if (options.init) { initProject(process.cwd()); console.log('✓ Initialized'); return; }
 
-  // ══════ Init Project ══════
-  if (options.init) {
-    const cwd = process.cwd();
-    initProject(cwd);
-    renderer.printSuccess(`FundeePseek initialized in ${cwd}`);
-    console.log(chalk.gray('  Created .deepseek/ with project settings'));
-    console.log(chalk.gray('  Run ') + chalk.cyan('dsc') + chalk.gray(' to start coding!'));
-    return;
-  }
-
-  const projectRoot = process.cwd();
-  const config = loadConfig(projectRoot);
-
+  const cwd = process.cwd();
+  const config = loadConfig(cwd);
   const model = options.model || config.defaultModel || 'deepseek-chat';
   const mode = options.mode || config.defaultMode || 'auto';
   const thinking = options.thinking || config.defaultThinking || 'off';
+  let apiKey = options.apiKey || config.apiKey || process.env.DEEPSEEK_API_KEY;
 
   const memory = new GlobalMemory();
 
-  // ══════ Offline Commands (no API key needed) ══════
+  // Quick offline commands
+  if (options.profile) { console.log(memory.getProfileSummary()); return; }
+  if (options.memories) { listMemoriesCli(memory); return; }
+  if (options.remember) { await memory.rememberFact(options.remember); console.log('✓ Saved'); return; }
+  if (options.forget) { console.log(memory.forget(options.forget) ? '✓ Deleted' : '✗ Not found'); return; }
+  if (options.listSessions) { listSessionsCli(cwd); return; }
+  if (options.export) { exportSessionCli(cwd, options.export); return; }
 
-  if (options.profile) {
-    console.log(memory.getProfileSummary());
-    return;
-  }
-
-  if (options.memories) {
-    const memories = memory.listMemories();
-    if (memories.length === 0) {
-      renderer.printInfo('No memories saved yet. Use --remember to save one.');
-    } else {
-      for (const mem of memories) {
-        console.log(chalk.cyan(`[${mem.metadata.type}] ${mem.description}`));
-        console.log(chalk.gray(`  ${mem.content.substring(0, 200)}`));
-      }
-    }
-    return;
-  }
-
-  if (options.remember) {
-    await memory.rememberFact(options.remember, 'project');
-    renderer.printSuccess('Memory saved.');
-    return;
-  }
-
-  if (options.forget) {
-    const deleted = memory.forget(options.forget);
-    console.log(deleted ? chalk.green('✓ Memory deleted.') : chalk.red('✗ Memory not found.'));
-    return;
-  }
-
-  if (options.listSessions) {
-    const storage = new SessionStorage(projectRoot);
-    const sessions = storage.list();
-    if (sessions.length === 0) {
-      renderer.printInfo('No sessions found.');
-    } else {
-      renderer.printDivider();
-      for (const s of sessions) {
-        console.log(chalk.cyan(`  ${s.id.substring(0, 12)}...`));
-        console.log(chalk.gray(`  ${s.model} · ${s.mode} · ${s.messages.length} msgs · ${new Date(s.updatedAt).toLocaleString()}`));
-      }
-      renderer.printDivider();
-    }
-    return;
-  }
-
-  if (options.export) {
-    const storage = new SessionStorage(projectRoot);
-    const text = storage.exportAsText(options.export);
-    if (text) {
-      const outPath = path.join(projectRoot, `session-${options.export.substring(0, 8)}.md`);
-      fs.writeFileSync(outPath, text, 'utf-8');
-      renderer.printSuccess(`Session exported to ${outPath}`);
-    } else {
-      renderer.printError('Session not found.');
-    }
-    return;
-  }
-
-  // ══════ API Key Check ══════
-  let apiKey = options.apiKey || config.apiKey || process.env.DEEPSEEK_API_KEY;
-
-  // Single-prompt mode still requires key
+  // Single prompt needs key
   if (options.prompt && !apiKey) {
-    console.error(chalk.red('\n✗ No API key found.'));
-    console.error(chalk.gray('  Set DEEPSEEK_API_KEY environment variable or use --api-key'));
-    console.error(chalk.gray('  Get your key at: https://platform.deepseek.com/api_keys\n'));
-    process.exit(1);
+    console.error('✗ No API key. Use --api-key or set DEEPSEEK_API_KEY'); process.exit(1);
   }
 
-  // ══════ Agent Setup (lazy, for when key is available) ══════
+  // Lazy agent
   let agent = null;
+  let currentModel = model, currentMode = mode, currentThinking = thinking;
 
   function createAgent(key) {
     apiKey = key;
     agent = new Agent({
-      apiKey,
-      model,
-      mode,
-      thinking,
-      projectRoot,
+      apiKey, model: currentModel, mode: currentMode, thinking: currentThinking,
+      projectRoot: cwd,
       promptContext: {
-        projectRoot,
-        projectFiles: getProjectFiles(projectRoot),
-        gitStatus: getGitStatus(projectRoot),
-        mode,
-        model,
+        projectRoot: cwd,
+        projectFiles: getProjectFiles(cwd),
+        gitStatus: getGitStatus(cwd),
+        mode: currentMode, model: currentModel,
         userProfile: memory.profile,
         memories: memory.getRelevantMemories(),
       },
     });
-    wireAgentEvents(agent, memory);
+    wireEvents(agent, memory);
     return agent;
   }
 
-  // Create agent upfront if key exists
-  if (apiKey) {
-    createAgent(apiKey);
-  }
+  if (apiKey) createAgent(apiKey);
 
-  // ══════ Single Prompt Mode ══════
+  // ── Single prompt ──
   if (options.prompt && agent) {
-    // Print compact header
-    console.log(renderer.renderBanner({ model, mode, thinking, projectRoot }));
-    renderer.printDivider();
-
-    // Wire up visual events
-    wireAgentEvents(agent, memory);
-
-    const startTime = Date.now();
+    console.log(renderer.renderBanner({ title: 'FundeePseek' }));
+    const t0 = Date.now();
     await agent.chat(options.prompt);
-    const duration = Date.now() - startTime;
-
-    renderer.printBlank();
-
-    // Show session summary
-    const usage = agent.getUsage();
-    const ctxStats = agent.getContextStats();
+    const dur = Date.now() - t0;
+    const u = agent.getUsage();
+    const cs = agent.getContextStats();
     console.log(renderer.renderSessionSummary({
-      model,
-      mode,
-      messages: ctxStats.messageCount,
-      promptTokens: usage.promptTokens,
-      completionTokens: usage.completionTokens,
-      reasoningTokens: usage.reasoningTokens,
-      cost: usage.cost,
-      rounds: usage.rounds,
-      duration,
+      model: currentModel, mode: currentMode,
+      messages: cs.messageCount,
+      promptTokens: u.promptTokens, completionTokens: u.completionTokens,
+      reasoningTokens: u.reasoningTokens, cost: u.cost, rounds: u.rounds, duration: dur,
     }));
-
-    // Save session
-    saveSession(projectRoot, agent, memory);
+    saveSession(cwd, agent, memory);
     return;
   }
 
-  // ══════ Interactive Mode ══════
+  // ── Interactive mode ──
   renderer.clearScreen();
 
-  // Print header
-  console.log(renderer.renderBanner({ model, mode, thinking, projectRoot }));
+  // Show welcome panel
+  console.log(renderer.renderWelcome({
+    model: currentModel, mode: currentMode, projectRoot: cwd, hasKey: !!agent,
+  }));
 
-  if (!agent) {
-    // No API key — show setup screen
-    showSetupScreen(projectRoot, memory);
-  } else {
-    // Has key — show normal help line
-    console.log(chalk.gray(`  Commands: ${chalk.white('/auto /plan /ask /chat')}  ${chalk.white('/model <name>')}  ${chalk.white('/clear /compact /usage /help')}  ${chalk.white('/exit')}`));
-    renderer.printDivider();
+  // Status bar
+  console.log(renderer.renderStatusBar({ mode: currentMode, model: currentModel, thinking: currentThinking }));
 
-    // Resume session
-    if (!options.newSession) {
-      const resumed = tryResumeSession(projectRoot, agent, options.resume);
-      if (resumed) {
-        renderer.printInfo('Session resumed. Type /clear to start fresh.');
-        renderer.printBlank();
-      }
-    }
+  // Divider
+  console.log(renderer.renderDivider());
+
+  // If has key, resume session
+  if (agent && !options.newSession) {
+    const resumed = tryResume(cwd, agent, options.resume);
+    if (resumed) { renderer.info('Session resumed. /clear to start fresh.'); }
   }
 
-  // Create readline
+  // ══════ Readline with autocomplete ══════
   const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: agent ? renderer.getPrompt(mode) : chalk.yellow.bold('🔑 funds › '),
-    terminal: true,
-    historySize: 1000,
+    input: process.stdin, output: process.stdout,
+    prompt: renderer.getPrompt(),
+    terminal: true, historySize: 1000,
+    completer: slashCompleter,
   });
 
   rl.prompt();
 
-  // Handle input
+  // Show status bar again before each prompt
+  let lastMode = currentMode, lastModel = currentModel;
+  const usage = agent ? agent.getUsage() : { totalTokens: 0, cost: 0 };
+
   rl.on('line', async (line) => {
     const input = line.trim();
+
+    // Always re-show status + divider if model/mode changed
+    if (currentMode !== lastMode || currentModel !== lastModel) {
+      lastMode = currentMode; lastModel = currentModel;
+      console.log(renderer.renderDivider());
+    }
+
     if (!input) {
-      rl.setPrompt(agent ? renderer.getPrompt(mode) : chalk.yellow.bold('🔑 funds › '));
+      console.log(renderer.renderDivider());
+      console.log(renderer.renderStatusBar({
+        mode: currentMode, model: currentModel, thinking: currentThinking,
+        tokens: agent?.getUsage().totalTokens, cost: agent?.getUsage().cost,
+      }));
+      rl.setPrompt(renderer.getPrompt());
       rl.prompt();
       return;
     }
@@ -256,345 +202,352 @@ async function main(options) {
     // Exit
     if (input === '/exit' || input === '/quit') {
       console.log(chalk.gray('\n  Goodbye! 👋\n'));
-      if (agent) saveSession(projectRoot, agent, memory);
+      if (agent) saveSession(cwd, agent, memory);
       rl.close();
       return;
     }
 
-    // ══════ Auth command (available without agent) ══════
+    // ══════ /auth ══════
     if (input.startsWith('/auth ') || input.startsWith('/key ')) {
       const key = input.replace(/^\/(auth|key)\s+/, '').trim();
-      if (!key || key.length < 10) {
-        renderer.printError('Invalid API key. Should start with "sk-".');
-        rl.setPrompt(chalk.yellow.bold('🔑 funds › '));
+      if (!key || key.length < 10) { renderer.error('Invalid key'); rl.prompt(); return; }
+      saveGlobalKey(key);
+      createAgent(key);
+      renderer.clearScreen();
+      console.log(renderer.renderWelcome({
+        model: currentModel, mode: currentMode, projectRoot: cwd, hasKey: true,
+      }));
+      if (!options.newSession) {
+        const resumed = tryResume(cwd, agent, options.resume);
+        if (resumed) renderer.info('Session resumed.');
+      }
+      console.log(renderer.renderDivider());
+      console.log(renderer.renderStatusBar({
+        mode: currentMode, model: currentModel, thinking: currentThinking,
+      }));
+      rl.setPrompt(renderer.getPrompt());
+      rl.prompt();
+      return;
+    }
+
+    // ══════ No agent yet ══════
+    if (!agent) {
+      console.log(chalk.yellow('\n  👋 First, set your API key:'));
+      console.log(chalk.cyan('  /auth sk-your-deepseek-api-key\n'));
+      console.log(renderer.renderDivider());
+      console.log(renderer.renderStatusBar({ mode: currentMode, model: currentModel, thinking: currentThinking }));
+      rl.setPrompt(renderer.getPrompt());
+      rl.prompt();
+      return;
+    }
+
+    // ══════ Local slash commands ══════
+    const localResult = handleLocal(input, agent, memory, cwd, rl);
+    if (localResult === 'HANDLED') {
+      // Update mode/model if changed
+      if (input.startsWith('/model ')) {
+        currentModel = input.slice(7).trim();
+        updateStatus(agent, memory, currentMode, currentModel, currentThinking);
+        rl.setPrompt(renderer.getPrompt());
         rl.prompt();
         return;
       }
-
-      // Save to global config
-      try {
-        const configDir = path.join(process.env.HOME || process.env.USERPROFILE || '~', '.fundeepseek');
-        if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
-        const cfg = fs.existsSync(path.join(configDir, 'config.json'))
-          ? JSON.parse(fs.readFileSync(path.join(configDir, 'config.json'), 'utf-8'))
-          : {};
-        cfg.apiKey = key;
-        fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify(cfg, null, 2), 'utf-8');
-      } catch (e) {
-        renderer.printWarning('API key set for this session, but failed to save permanently.');
+      if (['/auto', '/plan', '/ask', '/chat'].includes(input)) {
+        currentMode = input.slice(1);
+        lastMode = currentMode;
+        updateStatus(agent, memory, currentMode, currentModel, currentThinking);
+        rl.setPrompt(renderer.getPrompt());
+        rl.prompt();
+        return;
       }
-
-      // Create agent with the new key
-      createAgent(key);
-      renderer.printSuccess('API key configured! FundeePseek is ready.');
-      renderer.printBlank();
-      renderer.printDivider();
-
-      if (!options.newSession) {
-        const resumed = tryResumeSession(projectRoot, agent, options.resume);
-        if (resumed) {
-          renderer.printInfo('Session resumed. Type /clear to start fresh.');
-          renderer.printBlank();
-        }
+      if (input.startsWith('/thinking ')) {
+        currentThinking = input.slice(10).trim();
+        agent.agentConfig.thinking = currentThinking;
+        console.log(chalk.green(`  ✓ Thinking: ${currentThinking}`));
+        updateStatus(agent, memory, currentMode, currentModel, currentThinking);
+        rl.setPrompt(renderer.getPrompt());
+        rl.prompt();
+        return;
       }
-
-      rl.setPrompt(renderer.getPrompt(mode));
+      updateStatus(agent, memory, currentMode, currentModel, currentThinking);
+      rl.setPrompt(renderer.getPrompt());
       rl.prompt();
       return;
     }
 
-    // If no agent yet and not auth command
-    if (!agent) {
-      console.log(chalk.yellow('\n  👋 Welcome! First, set your API key:'));
-      console.log(chalk.white('     /auth sk-your-deepseek-api-key'));
-      console.log(chalk.gray('\n  Get a key at: https://platform.deepseek.com/api_keys\n'));
-      rl.setPrompt(chalk.yellow.bold('🔑 funds › '));
-      rl.prompt();
-      return;
-    }
-
-    // ══════ Normal agent flow ══════
-
-    // Local slash commands
-    const cmdResult = handleLocalCommand(input, agent, memory, rl);
-    if (cmdResult !== null) {
-      rl.setPrompt(renderer.getPrompt(mode));
-      rl.prompt();
-      return;
-    }
-
-    // Agent turn
-    renderer.printBlank();
-    const startTime = Date.now();
+    // ══════ Agent turn ══════
+    renderer.blank();
+    const t0 = Date.now();
 
     try {
       await agent.chat(input);
     } catch (err) {
-      renderer.printError(`Agent error: ${err.message}`);
+      renderer.error('Error: ' + err.message);
     }
 
-    const elapsed = Date.now() - startTime;
+    const elapsed = Date.now() - t0;
     memory.learnFromMessages(agent.exportContext());
+    const u = agent.getUsage();
 
-    // Quick status line
-    const usage = agent.getUsage();
-    if (usage.totalTokens > 0) {
-      process.stdout.write(chalk.gray(`  ⏱ ${formatDuration(elapsed)} · ${usage.totalTokens.toLocaleString()} tokens · $${usage.cost.toFixed(4)}`));
+    // Status line
+    if (u.totalTokens > 0) {
+      process.stdout.write(chalk.gray(`  ⏱ ${fmtDur(elapsed)} · ${u.totalTokens.toLocaleString()} tok · $${u.cost.toFixed(4)}`));
     }
-    renderer.printBlank();
-    renderer.printBlank();
+    renderer.blank();
+    renderer.blank();
 
-    rl.setPrompt(renderer.getPrompt(agent.mode || mode));
+    // Re-show divider + status
+    console.log(renderer.renderDivider());
+    console.log(renderer.renderStatusBar({
+      mode: currentMode, model: currentModel, thinking: currentThinking,
+      tokens: u.totalTokens, cost: u.cost,
+    }));
+    rl.setPrompt(renderer.getPrompt());
     rl.prompt();
   });
 
-  rl.on('close', () => {
+  rl.on('close', () => { console.log(''); process.exit(0); });
+}
+
+// ═══════════════════════════════════════════════════════════
+// Slash Autocomplete — /<tab> shows all commands
+// ═══════════════════════════════════════════════════════════
+
+function slashCompleter(line) {
+  if (!line.startsWith('/')) return [[], line];
+
+  const partial = line.slice(1).toLowerCase();
+  const matches = SLASH_COMMANDS.filter(c => c.cmd.slice(1).startsWith(partial));
+
+  if (matches.length === 1) {
+    // Single match — complete the command
+    return [[matches[0].cmd + ' '], line];
+  }
+
+  if (matches.length > 1) {
+    // Multiple matches — show menu
+    const maxCmdLen = Math.max(...matches.map(m => m.cmd.length));
+    const w = process.stdout.columns || 80;
+    const colW = Math.min(w - 4, 80);
+
     console.log('');
-    process.exit(0);
-  });
+    console.log(renderer.renderDivider());
+
+    for (const m of matches) {
+      const cmd = chalk.cyan(m.cmd.padEnd(maxCmdLen + 4));
+      const desc = chalk.gray(m.desc.slice(0, colW - maxCmdLen - 6));
+      console.log(cmd + desc);
+    }
+
+    console.log(renderer.renderDivider());
+    console.log(renderer.renderStatusBar({ mode: 'auto', model: 'deepseek-chat', thinking: 'off' }));
+    // Redraw prompt with partial input
+    process.stdout.write(renderer.getPrompt() + line);
+  }
+
+  return [[], line];
 }
 
 // ═══════════════════════════════════════════════════════════
-// Setup Screen — shown when no API key configured
+// Local command handler
 // ═══════════════════════════════════════════════════════════
 
-function showSetupScreen(projectRoot, memory) {
-  const w = Math.min(process.stdout.columns || 80, 70);
+function handleLocal(input, agent, memory, cwd, rl) {
+  if (input === '/help') {
+    const w = process.stdout.columns || 80;
+    console.log('');
+    console.log(chalk.cyan('╭' + '─'.repeat(w - 2) + '╮'));
+    console.log(chalk.cyan('│') + centerText(chalk.bold(' FundeePseek Commands '), w - 2) + chalk.cyan('│'));
+    console.log(chalk.cyan('│') + ' '.repeat(w - 2) + chalk.cyan('│'));
 
-  console.log([
-    '',
-    chalk.yellow.bold('  ╔' + '═'.repeat(w - 4) + '╗'),
-    chalk.yellow.bold('  ║') + chalk.white.bold('  👋 Welcome to FundeePseek!') + ' '.repeat(Math.max(0, w - 31)) + chalk.yellow.bold('║'),
-    chalk.yellow.bold('  ║') + ' '.repeat(w - 4) + chalk.yellow.bold('║'),
-    chalk.yellow.bold('  ║') + chalk.white('  To get started, set your DeepSeek API key:') + ' '.repeat(Math.max(0, w - 50)) + chalk.yellow.bold('║'),
-    chalk.yellow.bold('  ║') + ' '.repeat(w - 4) + chalk.yellow.bold('║'),
-    chalk.yellow.bold('  ║') + chalk.cyan.bold('     /auth sk-your-api-key-here') + ' '.repeat(Math.max(0, w - 34)) + chalk.yellow.bold('║'),
-    chalk.yellow.bold('  ║') + ' '.repeat(w - 4) + chalk.yellow.bold('║'),
-    chalk.yellow.bold('  ║') + chalk.gray('  Or set via:') + ' '.repeat(Math.max(0, w - 20)) + chalk.yellow.bold('║'),
-    chalk.yellow.bold('  ║') + chalk.gray('    • Environment:  setx DEEPSEEK_API_KEY sk-xxx') + ' '.repeat(Math.max(0, w - 53)) + chalk.yellow.bold('║'),
-    chalk.yellow.bold('  ║') + chalk.gray('    • Config file:  ~/.fundeepseek/config.json') + ' '.repeat(Math.max(0, w - 50)) + chalk.yellow.bold('║'),
-    chalk.yellow.bold('  ║') + chalk.gray('    • CLI flag:     funds --api-key sk-xxx') + ' '.repeat(Math.max(0, w - 46)) + chalk.yellow.bold('║'),
-    chalk.yellow.bold('  ║') + ' '.repeat(w - 4) + chalk.yellow.bold('║'),
-    chalk.yellow.bold('  ║') + chalk.gray('  Get your key: https://platform.deepseek.com/api_keys') + ' '.repeat(Math.max(0, w - 57)) + chalk.yellow.bold('║'),
-    chalk.yellow.bold('  ╚' + '═'.repeat(w - 4) + '╝'),
-    '',
-  ].join('\n'));
-}
-
-// ═══════════════════════════════════════════════════════════
-// Event Wiring — connects Agent events to visual renderer
-// ═══════════════════════════════════════════════════════════
-
-let thinkingActiveInTurn = false;
-
-function wireAgentEvents(agent, memory) {
-  // Remove old listeners to avoid duplicates
-  agent.removeAllListeners('thinking');
-  agent.removeAllListeners('stream');
-  agent.removeAllListeners('tool:start');
-  agent.removeAllListeners('tool:done');
-  agent.removeAllListeners('tool:error');
-  agent.removeAllListeners('warning');
-  agent.removeAllListeners('error');
-  agent.removeAllListeners('response');
-
-  agent.on('thinking', (text) => {
-    if (!thinkingActiveInTurn) {
-      renderer.startThinking();
-      thinkingActiveInTurn = true;
+    const maxCmd = Math.max(...SLASH_COMMANDS.map(c => c.cmd.length));
+    for (const c of SLASH_COMMANDS) {
+      const cmd = chalk.cyan(c.cmd.padEnd(maxCmd + 2));
+      const desc = chalk.gray(c.desc);
+      const pad = Math.max(0, w - 4 - maxCmd - 2 - c.desc.length);
+      console.log(chalk.cyan('│ ') + cmd + desc + ' '.repeat(pad) + chalk.cyan(' │'));
     }
-    renderer.appendThinking(text);
-  });
 
-  agent.on('stream', (text) => {
-    if (thinkingActiveInTurn) {
-      renderer.endThinking();
-      thinkingActiveInTurn = false;
-    }
-    renderer.writeStream(text);
-  });
+    console.log(chalk.cyan('╰' + '─'.repeat(w - 2) + '╯'));
+    console.log('');
+    return 'HANDLED';
+  }
 
-  agent.on('tool:start', (name, args) => {
-    if (thinkingActiveInTurn) {
-      renderer.endThinking();
-      thinkingActiveInTurn = false;
-    }
-    renderer.startToolProgress(name, args);
-  });
-
-  agent.on('tool:done', (name, result) => {
-    const detail = result?.metadata
-      ? Object.values(result.metadata).join(', ')
-      : undefined;
-    renderer.finishToolProgress(name, true, detail);
-  });
-
-  agent.on('tool:error', (name, err) => {
-    renderer.finishToolProgress(name, false, err?.substring(0, 60));
-  });
-
-  agent.on('warning', (msg) => {
-    renderer.printWarning(msg);
-  });
-
-  agent.on('error', (err) => {
-    renderer.printError(err.message);
-  });
-
-  agent.on('response', () => {
-    thinkingActiveInTurn = false;
-  });
-}
-
-// ═══════════════════════════════════════════════════════════
-// Local Command Handlers
-// ═══════════════════════════════════════════════════════════
-
-function handleLocalCommand(input, agent, memory, rl) {
-  // Profile
   if (input === '/profile') {
     console.log('\n' + memory.getProfileSummary() + '\n');
-    return true;
+    return 'HANDLED';
   }
 
-  // Memories
   if (input === '/memories') {
     const mems = memory.listMemories();
-    if (mems.length === 0) {
-      renderer.printInfo('No memories yet. Use /remember <text> to save one.');
-    } else {
-      renderer.printDivider();
-      for (const mem of mems.slice(0, 10)) {
-        console.log(chalk.cyan(`  [${mem.metadata.type}] ${mem.description}`));
-      }
-      renderer.printDivider();
-    }
-    return true;
+    if (mems.length === 0) { renderer.info('No memories yet.'); }
+    else { for (const m of mems.slice(0, 10)) console.log(chalk.cyan(`  [${m.metadata.type}]`) + ' ' + m.description); }
+    return 'HANDLED';
   }
 
-  // Remember
   if (input.startsWith('/remember ')) {
-    const fact = input.slice(10).trim();
-    memory.rememberFact(fact);
-    renderer.printSuccess('Memory saved.');
-    return true;
+    memory.rememberFact(input.slice(10).trim());
+    renderer.success('Saved to memory.');
+    return 'HANDLED';
   }
 
-  // Forget
   if (input.startsWith('/forget ')) {
-    const slug = input.slice(8).trim();
-    const deleted = memory.forget(slug);
-    console.log(deleted ? chalk.green('  ✓ Deleted.') : chalk.red('  ✗ Not found.'));
-    return true;
+    const ok = memory.forget(input.slice(8).trim());
+    console.log(ok ? chalk.green('  ✓ Deleted') : chalk.red('  ✗ Not found'));
+    return 'HANDLED';
   }
 
-  // Help
-  if (input === '/help') {
+  if (input === '/release-notes') {
     console.log([
       '',
-      chalk.bold.cyan('  FundeePseek Commands'),
+      chalk.bold.cyan('  FundeePseek v1.0.0 — Release Notes'),
       '',
-      chalk.white('  /auto') + chalk.gray('      — Full autonomy mode'),
-      chalk.white('  /plan') + chalk.gray('      — Plan-first mode'),
-      chalk.white('  /ask') + chalk.gray('       — Read-only mode'),
-      chalk.white('  /chat') + chalk.gray('      — Pure conversation'),
-      chalk.white('  /auth <key>') + chalk.gray(' — Set API key'),
-      chalk.white('  /model <name>') + chalk.gray(' — Switch model'),
-      chalk.white('  /clear') + chalk.gray('     — Clear context'),
-      chalk.white('  /compact') + chalk.gray('   — Show context usage'),
-      chalk.white('  /usage') + chalk.gray('     — Token usage & cost'),
-      chalk.white('  /profile') + chalk.gray('   — Your coding profile'),
-      chalk.white('  /remember <t>') + chalk.gray(' — Save a memory'),
-      chalk.white('  /memories') + chalk.gray('  — List memories'),
-      chalk.white('  /exit') + chalk.gray('      — Exit & save'),
+      chalk.white('  ✨ New:'),
+      chalk.gray('    • 4 models: V3 · R1 · V4-Pro · V4-Flash'),
+      chalk.gray('    • Thinking mode for deep reasoning'),
+      chalk.gray('    • Claude Code style interactive UI'),
+      chalk.gray('    • Global memory & user profiling'),
+      chalk.gray('    • 8 tools: Read/Write/Edit/Bash/Grep/Glob/Git/Web'),
+      chalk.gray('    • Session persistence & resume'),
+      chalk.gray('    • /auth for no-config startup'),
       '',
     ].join('\n'));
-    return true;
+    return 'HANDLED';
   }
 
-  // Mode changes — update prompt
-  if (['/auto', '/plan', '/ask', '/chat'].includes(input)) {
-    return true; // Handled by agent
+  if (input === '/sessions') {
+    listSessionsCli(cwd);
+    return 'HANDLED';
   }
 
-  // Model change
-  if (input.startsWith('/model ')) {
-    return true; // Handled by agent
+  if (input.startsWith('/resume')) {
+    const id = input.slice(8).trim() || undefined;
+    const resumed = tryResume(cwd, agent, id);
+    console.log(resumed ? chalk.green('  ✓ Resumed') : chalk.red('  ✗ No session found'));
+    return 'HANDLED';
   }
 
-  // Clear context
-  if (input === '/clear') {
-    return true; // Handled by agent
-  }
+  return null; // pass to agent
+}
 
-  return null; // Not handled locally, pass to agent
+// ═══════════════════════════════════════════════════════════
+// Event wiring
+// ═══════════════════════════════════════════════════════════
+
+let thinkingOn = false;
+
+function wireEvents(agent, memory) {
+  agent.removeAllListeners();
+  agent.on('thinking', (t) => {
+    if (!thinkingOn) { renderer.startThinking(); thinkingOn = true; }
+    renderer.appendThinking(t);
+  });
+  agent.on('stream', (t) => {
+    if (thinkingOn) { renderer.endThinking(); thinkingOn = false; }
+    renderer.writeStream(t);
+  });
+  agent.on('tool:start', (name, args) => {
+    if (thinkingOn) { renderer.endThinking(); thinkingOn = false; }
+    renderer.startTool(name, args);
+  });
+  agent.on('tool:done', (name, result) => {
+    const detail = result?.metadata ? Object.values(result.metadata).join(' · ') : undefined;
+    renderer.finishTool(name, true, detail);
+  });
+  agent.on('tool:error', (name, err) => renderer.finishTool(name, false, err?.slice(0, 60)));
+  agent.on('warning', (m) => renderer.warn(m));
+  agent.on('error', (e) => renderer.error(e.message));
+  agent.on('response', () => { thinkingOn = false; });
 }
 
 // ═══════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════
 
-function getProjectFiles(projectRoot) {
+function getProjectFiles(root) {
   try {
-    const entries = fs.readdirSync(projectRoot, { withFileTypes: true });
-    return entries
+    return fs.readdirSync(root, { withFileTypes: true })
       .filter(e => !e.name.startsWith('.') || e.name === '.gitignore')
       .slice(0, 30)
       .map(e => `${e.isDirectory() ? '📁' : '📄'} ${e.name}${e.isDirectory() ? '/' : ''}`)
       .join('\n');
-  } catch {
-    return '';
-  }
+  } catch { return ''; }
 }
 
-function getGitStatus(projectRoot) {
-  try {
-    const { execSync } = require('child_process');
-    return execSync('git status --short', {
-      cwd: projectRoot,
-      encoding: 'utf-8',
-      timeout: 5000,
-    }).trim();
-  } catch {
-    return '';
-  }
+function getGitStatus(root) {
+  try { return require('child_process').execSync('git status --short', { cwd: root, encoding: 'utf-8', timeout: 5000 }).trim(); }
+  catch { return ''; }
 }
 
-function tryResumeSession(projectRoot, agent, specificId) {
+function saveGlobalKey(key) {
   try {
-    const storage = new SessionStorage(projectRoot);
-    let session;
-    if (specificId === true || specificId === undefined) {
-      session = storage.getLatest();
-    } else if (typeof specificId === 'string') {
-      session = storage.load(specificId);
-    }
-    if (session && session.messages?.length > 0) {
-      agent.resume(session.messages);
-      return true;
-    }
-  } catch {
-    // ignore
-  }
+    const dir = path.join(process.env.HOME || process.env.USERPROFILE || '~', '.fundeepseek');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const cfgPath = path.join(dir, 'config.json');
+    const cfg = fs.existsSync(cfgPath) ? JSON.parse(fs.readFileSync(cfgPath, 'utf-8')) : {};
+    cfg.apiKey = key;
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf-8');
+    renderer.success('API key saved to ~/.fundeepseek/config.json');
+  } catch { renderer.warn('Key set for this session (failed to save permanently).'); }
+}
+
+function tryResume(root, agent, id) {
+  try {
+    const storage = new SessionStorage(root);
+    const session = (id === true || !id) ? storage.getLatest() : storage.load(id);
+    if (session?.messages?.length > 0) { agent.resume(session.messages); return true; }
+  } catch {}
   return false;
 }
 
-function saveSession(projectRoot, agent, memory) {
-  try {
-    const mgr = new SessionManager(projectRoot, agent._config?.model || 'deepseek-chat', agent._config?.mode || 'auto');
-    mgr.save();
-    memory.learnFromMessages(agent.exportContext());
-  } catch {
-    // silent fail
+function saveSession(root, agent, memory) {
+  try { memory.learnFromMessages(agent.exportContext()); } catch {}
+}
+
+function updateStatus(agent, memory, mode, model, thinking) {
+  console.log(renderer.renderDivider());
+  const u = agent?.getUsage();
+  console.log(renderer.renderStatusBar({
+    mode, model, thinking,
+    tokens: u?.totalTokens, cost: u?.cost,
+  }));
+}
+
+function listMemoriesCli(memory) {
+  const mems = memory.listMemories();
+  if (!mems.length) { console.log('No memories yet.'); return; }
+  for (const m of mems) console.log(`[${m.metadata.type}] ${m.description}`);
+}
+
+function listSessionsCli(root) {
+  const storage = new SessionStorage(root);
+  const sessions = storage.list();
+  if (!sessions.length) { console.log('No sessions found.'); return; }
+  for (const s of sessions) {
+    console.log(chalk.cyan(`  ${s.id.slice(0, 16)}...`));
+    console.log(chalk.gray(`  ${s.model} · ${s.mode} · ${s.messages.length} msgs · ${new Date(s.updatedAt).toLocaleString()}`));
   }
 }
 
-function formatDuration(ms) {
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60) return seconds + 's';
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return m + 'm ' + s + 's';
+function exportSessionCli(root, id) {
+  const storage = new SessionStorage(root);
+  const text = storage.exportAsText(id);
+  if (text) {
+    const out = path.join(root, `session-${id.slice(0, 8)}.md`);
+    fs.writeFileSync(out, text, 'utf-8');
+    console.log('✓ Exported to ' + out);
+  } else { console.log('✗ Session not found'); }
+}
+
+function centerText(text, width) {
+  const sw = text.replace(/\x1b\[[0-9;]*m/g, '').length;
+  const left = Math.floor((width - sw) / 2);
+  return ' '.repeat(Math.max(0, left)) + text + ' '.repeat(Math.max(0, width - sw - left));
+}
+
+function fmtDur(ms) {
+  const s = Math.floor(ms / 1000);
+  return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's';
 }
 
 program.parse(process.argv);
