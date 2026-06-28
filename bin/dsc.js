@@ -16,7 +16,7 @@ let renderer;
 const program = new Command();
 
 program
-  .name('dsc')
+  .name('funds')
   .description('FundeePseek — DeepSeek CLI Coding Agent')
   .version('1.0.0')
   .option('-p, --prompt <text>', 'Single prompt (non-interactive mode)')

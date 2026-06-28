@@ -105,7 +105,7 @@ export class SessionManager {
   private createNew(model: ModelName, mode: AgentMode): Session {
     sessionCounter++;
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const id = `dsc-${timestamp}-${sessionCounter}`;
+    const id = `funds-${timestamp}-${sessionCounter}`;
 
     return {
       id,

@@ -4,7 +4,7 @@
   "description": "DeepSeek-optimized CLI programming tool with full agent loop, multi-model support, and intelligent code assistance",
   "main": "dist/index.js",
   "bin": {
-    "dsc": "./bin/dsc.js"
+    "funds": "./bin/dsc.js"
   },
   "scripts": {
     "build": "tsc",

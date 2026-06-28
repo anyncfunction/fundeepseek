@@ -306,7 +306,7 @@ export function getPrompt(mode: string): string {
   const icon = icons[mode] || '>';
 
   // Multi-color gradient prompt
-  return chalk.bold.cyan(icon + ' dsc') + chalk.cyan(' › ');
+  return chalk.bold.cyan(icon + ' funds') + chalk.cyan(' › ');
 }
 
 // ═══════════════════════════════════════════════════════════
