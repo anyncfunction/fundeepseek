@@ -1,87 +1,88 @@
 #!/usr/bin/env node
 // ============================================================
-// FundeePseek CLI — dsc command entry point
+// FundeePseek CLI — Rich Interactive Terminal UI
 // ============================================================
 const { Command } = require('commander');
 const chalk = require('chalk');
 const path = require('path');
 const fs = require('fs');
 const readline = require('readline');
-const os = require('os');
 
-// Dynamic imports for TypeScript-compiled modules
-let Agent, GlobalMemory, loadConfig, initProject;
-let logger, estimateMessageTokens, formatTokens;
+// Dynamically loaded after build
+let Agent, GlobalMemory, loadConfig, initProject, SessionManager, SessionStorage;
+
+let renderer;
 
 const program = new Command();
 
-// ---- CLI Definition ----
-
 program
   .name('dsc')
-  .description(chalk.bold('FundeePseek') + ' — DeepSeek-powered CLI coding assistant')
+  .description('FundeePseek — DeepSeek CLI Coding Agent')
   .version('1.0.0')
-  .usage('[options] [prompt]')
   .option('-p, --prompt <text>', 'Single prompt (non-interactive mode)')
   .option('-m, --model <name>', 'Model: deepseek-chat, deepseek-reasoner, deepseek-v4-pro, deepseek-v4-flash')
   .option('-M, --mode <mode>', 'Mode: auto, plan, ask, chat', 'auto')
   .option('-t, --thinking <mode>', 'Thinking: on, off, auto', 'off')
-  .option('-r, --resume [session-id]', 'Resume a previous session (latest if no ID)')
-  .option('-s, --session <id>', 'Use a specific session ID')
-  .option('-n, --new-session', 'Start a new session (don\'t resume)')
-  .option('--init', 'Initialize FundeePseek in the current directory')
+  .option('-r, --resume [session-id]', 'Resume a previous session')
+  .option('-n, --new-session', 'Start a new session')
+  .option('--init', 'Initialize FundeePseek in current directory')
   .option('--list-sessions', 'List saved sessions')
   .option('--export <session-id>', 'Export a session as text')
-  .option('--profile', 'Show user profile')
+  .option('--profile', 'Show your user profile')
   .option('--memories', 'List global memories')
   .option('--remember <text>', 'Save a global memory')
   .option('--forget <slug>', 'Delete a global memory')
-  .option('-v, --verbose', 'Verbose logging', false)
   .option('--no-color', 'Disable colored output')
-  .option('--api-key <key>', 'DeepSeek API key (or set DEEPSEEK_API_KEY env var)')
+  .option('--api-key <key>', 'DeepSeek API key')
   .action(main);
 
-// ---- Main ----
-
 async function main(options) {
-  // Load modules
-  await loadModules();
+  // Load compiled modules
+  try {
+    const mod = require('../dist/index');
+    Agent = mod.Agent;
+    GlobalMemory = mod.GlobalMemory;
+    loadConfig = mod.loadConfig;
+    initProject = mod.initProject;
+    SessionManager = mod.SessionManager;
+    SessionStorage = mod.SessionStorage;
+  } catch (e) {
+    console.error(chalk.red('✗ FundeePseek not built. Run "npm run build" first.'));
+    process.exit(1);
+  }
 
-  // Initialize
+  renderer = require('../dist/ui/renderer');
+
+  // ══════ Init Project ══════
   if (options.init) {
     const cwd = process.cwd();
     initProject(cwd);
-    console.log(chalk.green(`✓ FundeePseek initialized in ${cwd}`));
+    renderer.printSuccess(`FundeePseek initialized in ${cwd}`);
     console.log(chalk.gray('  Created .deepseek/ with project settings'));
-    console.log(chalk.gray('  Run dsc to start coding!'));
+    console.log(chalk.gray('  Run ') + chalk.cyan('dsc') + chalk.gray(' to start coding!'));
     return;
   }
 
-  // Load config
   const projectRoot = process.cwd();
   const config = loadConfig(projectRoot);
 
-  // Determine model and mode (can be set without API key)
   const model = options.model || config.defaultModel || 'deepseek-chat';
   const mode = options.mode || config.defaultMode || 'auto';
   const thinking = options.thinking || config.defaultThinking || 'off';
 
-  // Initialize global memory (no API key needed)
   const memory = new GlobalMemory();
 
-  // ══════ Non-agent commands (no API key needed) ══════
+  // ══════ Offline Commands (no API key needed) ══════
 
-  // Show profile
   if (options.profile) {
     console.log(memory.getProfileSummary());
     return;
   }
 
-  // List memories
   if (options.memories) {
     const memories = memory.listMemories();
     if (memories.length === 0) {
-      console.log(chalk.gray('No memories saved yet.'));
+      renderer.printInfo('No memories saved yet. Use --remember to save one.');
     } else {
       for (const mem of memories) {
         console.log(chalk.cyan(`[${mem.metadata.type}] ${mem.description}`));
@@ -91,65 +92,57 @@ async function main(options) {
     return;
   }
 
-  // Save memory
   if (options.remember) {
     await memory.rememberFact(options.remember, 'project');
-    console.log(chalk.green('✓ Memory saved.'));
+    renderer.printSuccess('Memory saved.');
     return;
   }
 
-  // Forget memory
   if (options.forget) {
     const deleted = memory.forget(options.forget);
     console.log(deleted ? chalk.green('✓ Memory deleted.') : chalk.red('✗ Memory not found.'));
     return;
   }
 
-  // List sessions
   if (options.listSessions) {
-    const { SessionStorage } = require('../dist/session/storage');
     const storage = new SessionStorage(projectRoot);
     const sessions = storage.list();
     if (sessions.length === 0) {
-      console.log(chalk.gray('No sessions found.'));
+      renderer.printInfo('No sessions found.');
     } else {
+      renderer.printDivider();
       for (const s of sessions) {
-        console.log(chalk.cyan(`${s.id.substring(0, 12)}...`));
-        console.log(chalk.gray(`  Model: ${s.model} | Mode: ${s.mode} | ${s.messages.length} msgs | ${s.updatedAt}`));
+        console.log(chalk.cyan(`  ${s.id.substring(0, 12)}...`));
+        console.log(chalk.gray(`  ${s.model} · ${s.mode} · ${s.messages.length} msgs · ${new Date(s.updatedAt).toLocaleString()}`));
       }
+      renderer.printDivider();
     }
     return;
   }
 
-  // Export session
   if (options.export) {
-    const { SessionStorage } = require('../dist/session/storage');
     const storage = new SessionStorage(projectRoot);
     const text = storage.exportAsText(options.export);
     if (text) {
       const outPath = path.join(projectRoot, `session-${options.export.substring(0, 8)}.md`);
       fs.writeFileSync(outPath, text, 'utf-8');
-      console.log(chalk.green(`✓ Session exported to ${outPath}`));
+      renderer.printSuccess(`Session exported to ${outPath}`);
     } else {
-      console.log(chalk.red('✗ Session not found.'));
+      renderer.printError('Session not found.');
     }
     return;
   }
 
-  // ══════ Agent commands (API key required) ══════
-
-  // Get API key
+  // ══════ API Key Check ══════
   const apiKey = options.apiKey || config.apiKey || process.env.DEEPSEEK_API_KEY;
   if (!apiKey) {
-    console.error(chalk.red('✗ No API key found. Set DEEPSEEK_API_KEY environment variable or use --api-key'));
-    console.error(chalk.gray('  Get your key at: https://platform.deepseek.com/api_keys'));
+    console.error(chalk.red('\n✗ No API key found.'));
+    console.error(chalk.gray('  Set DEEPSEEK_API_KEY environment variable or use --api-key'));
+    console.error(chalk.gray('  Get your key at: https://platform.deepseek.com/api_keys\n'));
     process.exit(1);
   }
 
-  // ---- Get project context ----
-  const projectContext = await getProjectContext(projectRoot);
-
-  // ---- Create Agent ----
+  // ══════ Agent Setup ══════
   const agent = new Agent({
     apiKey,
     model,
@@ -158,8 +151,8 @@ async function main(options) {
     projectRoot,
     promptContext: {
       projectRoot,
-      projectFiles: projectContext.files,
-      gitStatus: projectContext.gitStatus,
+      projectFiles: getProjectFiles(projectRoot),
+      gitStatus: getGitStatus(projectRoot),
       mode,
       model,
       userProfile: memory.profile,
@@ -167,129 +160,121 @@ async function main(options) {
     },
   });
 
-  // ---- Handle single prompt mode ----
+  // ══════ Single Prompt Mode ══════
   if (options.prompt) {
-    console.log(chalk.gray(`Model: ${model} | Mode: ${mode} | Thinking: ${thinking}`));
-    console.log(chalk.gray('─'.repeat(60)));
+    // Print compact header
+    console.log(renderer.renderBanner({ model, mode, thinking, projectRoot }));
+    renderer.printDivider();
 
-    setupStreamHandlers(agent);
+    // Wire up visual events
+    wireAgentEvents(agent, memory);
 
-    const response = await agent.chat(options.prompt);
-    console.log('');
+    const startTime = Date.now();
+    await agent.chat(options.prompt);
+    const duration = Date.now() - startTime;
 
-    // Update memory
-    memory.learnFromMessages(agent.exportContext());
+    renderer.printBlank();
 
-    // Show usage
+    // Show session summary
     const usage = agent.getUsage();
-    if (usage.totalTokens > 0) {
-      console.log(chalk.gray(`\nTokens: ${usage.totalTokens.toLocaleString()} | Cost: $${usage.cost.toFixed(4)}`));
-    }
+    const ctxStats = agent.getContextStats();
+    console.log(renderer.renderSessionSummary({
+      model,
+      mode,
+      messages: ctxStats.messageCount,
+      promptTokens: usage.promptTokens,
+      completionTokens: usage.completionTokens,
+      reasoningTokens: usage.reasoningTokens,
+      cost: usage.cost,
+      rounds: usage.rounds,
+      duration,
+    }));
 
+    // Save session
+    saveSession(projectRoot, agent, memory);
     return;
   }
 
-  // ---- Interactive mode ----
-  console.log(chalk.bold.cyan('╔══════════════════════════════════════════════╗'));
-  console.log(chalk.bold.cyan('║') + chalk.bold.white('          FundeePseek v1.0.0                 ') + chalk.bold.cyan('║'));
-  console.log(chalk.bold.cyan('╚══════════════════════════════════════════════╝'));
-  console.log('');
-  console.log(chalk.gray(`Model: ${model} | Mode: ${mode} | Thinking: ${thinking}`));
-  console.log(chalk.gray(`Project: ${projectRoot}`));
-  console.log(chalk.gray(`Type /help for commands, /auto /plan /ask /chat to switch modes`));
-  console.log('');
+  // ══════ Interactive Mode ══════
+  // Clear screen for full immersive experience
+  renderer.clearScreen();
 
-  // Resume session if available and not --new-session
+  // Print header
+  console.log(renderer.renderBanner({ model, mode, thinking, projectRoot }));
+  console.log(chalk.gray(`  Commands: ${chalk.white('/auto /plan /ask /chat')}  ${chalk.white('/model <name>')}  ${chalk.white('/clear /compact /usage /help')}  ${chalk.white('/exit')}`));
+  renderer.printDivider();
+
+  // Wire up visual events
+  wireAgentEvents(agent, memory);
+
+  // Resume session
   if (!options.newSession) {
-    const resumed = await tryResume(projectRoot, agent, options.resume);
+    const resumed = tryResumeSession(projectRoot, agent, options.resume);
     if (resumed) {
-      console.log(chalk.gray('(Session resumed. Type /clear to start fresh)'));
-      console.log('');
+      renderer.printInfo('Session resumed. Type /clear to start fresh.');
+      renderer.printBlank();
     }
   }
 
-  setupStreamHandlers(agent);
-
-  // Create readline interface
+  // Create readline
+  const promptStr = renderer.getPrompt(mode);
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: chalk.cyan('dsc › '),
+    prompt: promptStr,
     terminal: true,
     historySize: 1000,
   });
 
   rl.prompt();
 
+  // Handle input
   rl.on('line', async (line) => {
     const input = line.trim();
     if (!input) {
+      rl.setPrompt(renderer.getPrompt(mode));
       rl.prompt();
       return;
     }
 
-    // Exit command
+    // Exit
     if (input === '/exit' || input === '/quit') {
-      console.log(chalk.gray('Goodbye!'));
-      // Save session
-      const { SessionManager } = require('../dist/session/manager');
-      const sessionMgr = new SessionManager(projectRoot, model, mode);
-      sessionMgr.session.messages = agent.exportContext();
-      sessionMgr.save();
-      memory.learnFromMessages(agent.exportContext());
+      console.log(chalk.gray('\n  Goodbye! 👋\n'));
+      saveSession(projectRoot, agent, memory);
       rl.close();
       return;
     }
 
-    // Handle slash commands locally
-    if (input === '/profile') {
-      console.log(memory.getProfileSummary());
-      rl.prompt();
-      return;
-    }
-
-    if (input === '/memories') {
-      const mems = memory.listMemories();
-      if (mems.length === 0) {
-        console.log(chalk.gray('No memories saved yet.'));
-      } else {
-        for (const mem of mems.slice(0, 10)) {
-          console.log(chalk.cyan(`[${mem.metadata.type}] ${mem.description}`));
-        }
-      }
-      rl.prompt();
-      return;
-    }
-
-    if (input.startsWith('/remember ')) {
-      const fact = input.slice(10).trim();
-      await memory.rememberFact(fact);
-      console.log(chalk.green('✓ Memory saved.'));
-      rl.prompt();
-      return;
-    }
-
-    if (input.startsWith('/forget ')) {
-      const slug = input.slice(8).trim();
-      memory.forget(slug);
-      console.log(chalk.green('✓ Memory deleted.'));
+    // Local slash commands
+    const cmdResult = handleLocalCommand(input, agent, memory, rl);
+    if (cmdResult !== null) {
+      rl.setPrompt(renderer.getPrompt(mode));
       rl.prompt();
       return;
     }
 
     // Agent turn
-    console.log('');
-    try {
-      const response = await agent.chat(input);
-      // Response is already streamed; we can print additional info here
-    } catch (err) {
-      console.error(chalk.red(`Error: ${err.message}`));
-    }
-    console.log('');
+    renderer.printBlank();
+    const startTime = Date.now();
 
-    // Update memory after each turn
+    try {
+      await agent.chat(input);
+    } catch (err) {
+      renderer.printError(`Agent error: ${err.message}`);
+    }
+
+    const elapsed = Date.now() - startTime;
     memory.learnFromMessages(agent.exportContext());
 
+    // Quick status line
+    const usage = agent.getUsage();
+    if (usage.totalTokens > 0) {
+      process.stdout.write(chalk.gray(`  ⏱ ${formatDuration(elapsed)} · ${usage.totalTokens.toLocaleString()} tokens · $${usage.cost.toFixed(4)}`));
+    }
+    renderer.printBlank();
+    renderer.printBlank();
+
+    rl.setPrompt(renderer.getPrompt(agent._mode || mode));
     rl.prompt();
   });
 
@@ -297,125 +282,221 @@ async function main(options) {
     console.log('');
     process.exit(0);
   });
+}
 
-  // Handle Ctrl+C gracefully
-  rl.on('SIGINT', () => {
-    console.log(chalk.gray('\nUse /exit or /quit to exit, or Ctrl+C again to force quit'));
-    rl.prompt();
+// ═══════════════════════════════════════════════════════════
+// Event Wiring — connects Agent events to visual renderer
+// ═══════════════════════════════════════════════════════════
+
+let thinkingActiveInTurn = false;
+
+function wireAgentEvents(agent, memory) {
+  // Remove old listeners to avoid duplicates
+  agent.removeAllListeners('thinking');
+  agent.removeAllListeners('stream');
+  agent.removeAllListeners('tool:start');
+  agent.removeAllListeners('tool:done');
+  agent.removeAllListeners('tool:error');
+  agent.removeAllListeners('warning');
+  agent.removeAllListeners('error');
+  agent.removeAllListeners('response');
+
+  agent.on('thinking', (text) => {
+    if (!thinkingActiveInTurn) {
+      renderer.startThinking();
+      thinkingActiveInTurn = true;
+    }
+    renderer.appendThinking(text);
+  });
+
+  agent.on('stream', (text) => {
+    if (thinkingActiveInTurn) {
+      renderer.endThinking();
+      thinkingActiveInTurn = false;
+    }
+    renderer.writeStream(text);
+  });
+
+  agent.on('tool:start', (name, args) => {
+    if (thinkingActiveInTurn) {
+      renderer.endThinking();
+      thinkingActiveInTurn = false;
+    }
+    renderer.startToolProgress(name, args);
+  });
+
+  agent.on('tool:done', (name, result) => {
+    const detail = result?.metadata
+      ? Object.values(result.metadata).join(', ')
+      : undefined;
+    renderer.finishToolProgress(name, true, detail);
+  });
+
+  agent.on('tool:error', (name, err) => {
+    renderer.finishToolProgress(name, false, err?.substring(0, 60));
+  });
+
+  agent.on('warning', (msg) => {
+    renderer.printWarning(msg);
+  });
+
+  agent.on('error', (err) => {
+    renderer.printError(err.message);
+  });
+
+  agent.on('response', () => {
+    thinkingActiveInTurn = false;
   });
 }
 
-// ---- Helpers ----
+// ═══════════════════════════════════════════════════════════
+// Local Command Handlers
+// ═══════════════════════════════════════════════════════════
 
-async function loadModules() {
-  try {
-    const mod = require('../dist/index');
-    Agent = mod.Agent;
-    GlobalMemory = mod.GlobalMemory;
-    loadConfig = mod.loadConfig;
-    initProject = mod.initProject;
-    logger = mod.logger;
-    estimateMessageTokens = mod.estimateMessageTokens;
-    formatTokens = mod.formatTokens;
-  } catch (e) {
-    console.error(chalk.red('Error: FundeePseek not built. Run "npm run build" first.'));
-    process.exit(1);
+function handleLocalCommand(input, agent, memory, rl) {
+  // Profile
+  if (input === '/profile') {
+    console.log('\n' + memory.getProfileSummary() + '\n');
+    return true;
   }
+
+  // Memories
+  if (input === '/memories') {
+    const mems = memory.listMemories();
+    if (mems.length === 0) {
+      renderer.printInfo('No memories yet. Use /remember <text> to save one.');
+    } else {
+      renderer.printDivider();
+      for (const mem of mems.slice(0, 10)) {
+        console.log(chalk.cyan(`  [${mem.metadata.type}] ${mem.description}`));
+      }
+      renderer.printDivider();
+    }
+    return true;
+  }
+
+  // Remember
+  if (input.startsWith('/remember ')) {
+    const fact = input.slice(10).trim();
+    memory.rememberFact(fact);
+    renderer.printSuccess('Memory saved.');
+    return true;
+  }
+
+  // Forget
+  if (input.startsWith('/forget ')) {
+    const slug = input.slice(8).trim();
+    const deleted = memory.forget(slug);
+    console.log(deleted ? chalk.green('  ✓ Deleted.') : chalk.red('  ✗ Not found.'));
+    return true;
+  }
+
+  // Help
+  if (input === '/help') {
+    console.log([
+      '',
+      chalk.bold.cyan('  FundeePseek Commands'),
+      '',
+      chalk.white('  /auto') + chalk.gray('      — Full autonomy mode'),
+      chalk.white('  /plan') + chalk.gray('      — Plan-first mode'),
+      chalk.white('  /ask') + chalk.gray('       — Read-only mode'),
+      chalk.white('  /chat') + chalk.gray('      — Pure conversation'),
+      chalk.white('  /model <name>') + chalk.gray(' — Switch model'),
+      chalk.white('  /clear') + chalk.gray('     — Clear context'),
+      chalk.white('  /compact') + chalk.gray('   — Show context usage'),
+      chalk.white('  /usage') + chalk.gray('     — Token usage & cost'),
+      chalk.white('  /profile') + chalk.gray('   — Your coding profile'),
+      chalk.white('  /remember <t>') + chalk.gray(' — Save a memory'),
+      chalk.white('  /memories') + chalk.gray('  — List memories'),
+      chalk.white('  /exit') + chalk.gray('      — Exit & save'),
+      '',
+    ].join('\n'));
+    return true;
+  }
+
+  // Mode changes — update prompt
+  if (['/auto', '/plan', '/ask', '/chat'].includes(input)) {
+    return true; // Handled by agent
+  }
+
+  // Model change
+  if (input.startsWith('/model ')) {
+    return true; // Handled by agent
+  }
+
+  // Clear context
+  if (input === '/clear') {
+    return true; // Handled by agent
+  }
+
+  return null; // Not handled locally, pass to agent
 }
 
-async function getProjectContext(projectRoot) {
-  let files = '';
-  let gitStatus = '';
+// ═══════════════════════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════════════════════
 
-  // List top-level project files
+function getProjectFiles(projectRoot) {
   try {
     const entries = fs.readdirSync(projectRoot, { withFileTypes: true });
-    const fileList = entries
+    return entries
       .filter(e => !e.name.startsWith('.') || e.name === '.gitignore')
       .slice(0, 30)
       .map(e => `${e.isDirectory() ? '📁' : '📄'} ${e.name}${e.isDirectory() ? '/' : ''}`)
       .join('\n');
-    files = fileList;
   } catch {
-    // ignore
+    return '';
   }
-
-  // Get git status
-  try {
-    const { execSync } = require('child_process');
-    gitStatus = execSync('git status --short', { cwd: projectRoot, encoding: 'utf-8', timeout: 5000 }).trim();
-  } catch {
-    // Not a git repo or git not available
-  }
-
-  return { files, gitStatus };
 }
 
-async function tryResume(projectRoot, agent, specificId) {
+function getGitStatus(projectRoot) {
   try {
-    const { SessionStorage } = require('../dist/session/storage');
-    const storage = new SessionStorage(projectRoot);
+    const { execSync } = require('child_process');
+    return execSync('git status --short', {
+      cwd: projectRoot,
+      encoding: 'utf-8',
+      timeout: 5000,
+    }).trim();
+  } catch {
+    return '';
+  }
+}
 
+function tryResumeSession(projectRoot, agent, specificId) {
+  try {
+    const storage = new SessionStorage(projectRoot);
     let session;
-    if (specificId === true) {
-      // --resume without specific ID: get latest
+    if (specificId === true || specificId === undefined) {
       session = storage.getLatest();
     } else if (typeof specificId === 'string') {
       session = storage.load(specificId);
     }
-
     if (session && session.messages?.length > 0) {
-      await agent.resume(session.messages);
+      agent.resume(session.messages);
       return true;
     }
   } catch {
-    // ignore resume errors
+    // ignore
   }
   return false;
 }
 
-function setupStreamHandlers(agent) {
-  let thinkingShown = false;
+function saveSession(projectRoot, agent, memory) {
+  try {
+    const mgr = new SessionManager(projectRoot, agent._config?.model || 'deepseek-chat', agent._config?.mode || 'auto');
+    mgr.save();
+    memory.learnFromMessages(agent.exportContext());
+  } catch {
+    // silent fail
+  }
+}
 
-  agent.on('thinking', (text) => {
-    if (!thinkingShown) {
-      process.stdout.write(chalk.yellow('\n🤔 Thinking: '));
-      thinkingShown = true;
-    }
-    process.stdout.write(chalk.yellow.dim(text));
-  });
-
-  agent.on('stream', (text) => {
-    if (thinkingShown) {
-      process.stdout.write('\n' + chalk.gray('─'.repeat(40)) + '\n');
-      thinkingShown = false;
-    }
-    process.stdout.write(text);
-  });
-
-  agent.on('tool:name', (name) => {
-    if (thinkingShown) {
-      process.stdout.write('\n' + chalk.gray('─'.repeat(40)) + '\n');
-      thinkingShown = false;
-    }
-    process.stdout.write(chalk.blue(`\n🔧 Using: ${name}...`));
-  });
-
-  agent.on('tool:done', (name) => {
-    process.stdout.write(chalk.green(' ✓'));
-  });
-
-  agent.on('tool:error', (name, err) => {
-    process.stdout.write(chalk.red(` ✗ ${err || ''}`));
-  });
-
-  agent.on('warning', (msg) => {
-    console.log(chalk.yellow(`\n⚠ ${msg}`));
-  });
-
-  agent.on('error', (err) => {
-    console.error(chalk.red(`\n✗ Error: ${err.message}`));
-  });
+function formatDuration(ms) {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return seconds + 's';
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return m + 'm ' + s + 's';
 }
 
 program.parse(process.argv);

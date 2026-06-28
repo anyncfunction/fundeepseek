@@ -69,6 +69,16 @@ export class Agent extends EventEmitter {
 
   // ---- Public API ----
 
+  /** Current operating mode */
+  get mode(): AgentMode {
+    return this.config.mode;
+  }
+
+  /** Current agent config */
+  get agentConfig(): AgentConfig {
+    return { ...this.config };
+  }
+
   /** Start an interactive conversation turn */
   async chat(userInput: string): Promise<string> {
     if (this.isRunning) {
@@ -299,10 +309,10 @@ export class Agent extends EventEmitter {
   private handleSlashCommand(input: string): string | null {
     const trimmed = input.trim();
 
-    if (trimmed === '/auto') return this.modeManager.switch('auto');
-    if (trimmed === '/plan') return this.modeManager.switch('plan');
-    if (trimmed === '/ask') return this.modeManager.switch('ask');
-    if (trimmed === '/chat') return this.modeManager.switch('chat');
+    if (trimmed === '/auto') { this.config.mode = 'auto'; return this.modeManager.switch('auto'); }
+    if (trimmed === '/plan') { this.config.mode = 'plan'; return this.modeManager.switch('plan'); }
+    if (trimmed === '/ask') { this.config.mode = 'ask'; return this.modeManager.switch('ask'); }
+    if (trimmed === '/chat') { this.config.mode = 'chat'; return this.modeManager.switch('chat'); }
 
     if (trimmed === '/clear') {
       this.context.reset();
